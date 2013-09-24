@@ -157,6 +157,13 @@ bld.SAMBA_MODULE('dcerpc_dnsserver',
     deps='DCERPC_COMMON dnsserver_common netif'
     )
 
+bld.SAMBA_MODULE('dcerpc_dfsr',
+	source='dfsr/dcesrv_dfsrrpc.c ',
+	autoproto='dfsr/proto.h',
+	subsystem='dcerpc_server',
+	init_function='dcerpc_server_frstrans_init',
+	deps='DCERPC_COMMON'
+	)
 
 bld.SAMBA_MODULE('service_dcerpc',
 	source='service_rpc.c',
