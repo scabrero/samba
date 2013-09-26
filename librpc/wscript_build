@@ -71,7 +71,7 @@ bld.SAMBA_SUBSYSTEM('NDR_FRSAPI',
     )
 
 bld.SAMBA_SUBSYSTEM('NDR_FRSTRANS',
-    source='gen_ndr/ndr_frstrans.c',
+    source='ndr/ndr_frstrans.c gen_ndr/ndr_frstrans.c',
     public_deps='ndr'
     )
 
