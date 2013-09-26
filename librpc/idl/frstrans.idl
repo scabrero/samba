@@ -7,6 +7,7 @@ import "misc.idl";
   version(1.0),
   endpoint("ncacn_ip_tcp:", "ncalrpc:"),
   helpstring("File Replication Service DFS-R"),
+  helper("../librpc/ndr/ndr_frstrans.h"),
   pointer_default(unique)
 ]
 interface frstrans
@@ -66,7 +67,7 @@ interface frstrans
 		hyper high;
 	} frstrans_VersionVector;
 
-	typedef [flag(NDR_PAHEX)] struct {
+	typedef [flag(NDR_PAHEX),nopush,nopull] struct {
 		boolean32 present;
 		boolean32 name_conflict;
 		uint32 attributes;
