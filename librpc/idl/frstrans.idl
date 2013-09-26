@@ -267,7 +267,7 @@ interface frstrans
 		[in,out,ref] frstrans_RequestedStagingPolicy *staging_policy,
 		[out,ref] policy_handle *server_context,
 		[out,ref] frstrans_RdcFileInfo **rdc_file_info,
-		[out,ref,size_is(buffer_size),length_is(*size_read)]
+		[out,ref,size_is(buffer_size),length_is(*size_read),flag(NDR_PAHEX)]
 			uint8 *data_buffer,
 		[in,range(0,262144)] uint32 buffer_size,
 		[out,ref] uint32 *size_read,
