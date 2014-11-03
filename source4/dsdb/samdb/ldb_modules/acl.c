@@ -742,6 +742,148 @@ static int acl_check_spn(TALLOC_CTX *mem_ctx,
 	return LDB_SUCCESS;
 }
 
+static int acl_check_dnshostname(TALLOC_CTX *mem_ctx,
+			 struct ldb_module *module,
+			 struct ldb_request *req,
+			 struct security_descriptor *sd,
+			 struct dom_sid *sid,
+			 const struct dsdb_attribute *attr,
+			 const struct dsdb_class *objectclass)
+{
+	int ret;
+	unsigned int i;
+	TALLOC_CTX *tmp_ctx = talloc_new(mem_ctx);
+	struct ldb_context *ldb = ldb_module_get_ctx(module);
+	struct ldb_result *acl_res;
+	struct ldb_result *partition_res;
+	struct ldb_message_element *el;
+	struct ldb_dn *partitions_dn = samdb_partitions_dn(ldb, tmp_ctx);
+	char *samAccountName;
+
+	static const char *acl_attrs[] = {
+		"samAccountName",
+		NULL
+	};
+	static const char *dnssuffixes_attrs[] = {
+		"msDS-AllowedDNSSuffixes",
+		NULL
+	};
+	struct ldb_dn *domain_nc;
+	const char *domain_dns_name;
+	const char *value_to_write;
+	char *value_to_check, *p;
+
+	/* if we have wp, we can do whatever we like */
+	if (acl_check_access_on_attribute(module,
+					  tmp_ctx,
+					  sd,
+					  sid,
+					  SEC_ADS_WRITE_PROP,
+					  attr, objectclass) == LDB_SUCCESS) {
+		talloc_free(tmp_ctx);
+		return LDB_SUCCESS;
+	}
+
+	ret = acl_check_extended_right(tmp_ctx, sd, acl_user_token(module),
+				       GUID_DRS_DNS_HOST_NAME,
+				       SEC_ADS_SELF_WRITE,
+				       sid);
+
+	if (ret == LDB_ERR_INSUFFICIENT_ACCESS_RIGHTS) {
+		dsdb_acl_debug(sd, acl_user_token(module),
+			       req->op.mod.message->dn,
+			       true,
+			       10);
+		talloc_free(tmp_ctx);
+		return ret;
+	}
+
+	ret = dsdb_module_search_dn(module, tmp_ctx,
+				    &acl_res, req->op.mod.message->dn,
+				    acl_attrs,
+				    DSDB_FLAG_NEXT_MODULE |
+				    DSDB_FLAG_AS_SYSTEM |
+				    DSDB_SEARCH_SHOW_RECYCLED,
+				    req);
+	if (ret != LDB_SUCCESS) {
+		talloc_free(tmp_ctx);
+		return ret;
+	}
+
+	/* Get the value being written */
+	value_to_write = ldb_msg_find_attr_as_string(req->op.mod.message, "dNSHostName", NULL);
+
+	/* The object has class computer or server (or a subclass of them) */
+
+	/* The value being written must have the following format:
+	 * computerName.fullDomainDnsName, where computerName is the current
+	 * sAMAccountName of the object (without the final "$" character),
+	 * and the fullDomainDnsName is the DNS name of the domain NC or one
+	 * of the values of msDS-AllowedDNSSuffixes on the domain NC (if any)
+	 * where the object that is being modified is located
+	 */
+	el = ldb_msg_find_element(req->op.mod.message, "samAccountName");
+	if (el) {
+		samAccountName = talloc_strdup(tmp_ctx, ldb_msg_find_attr_as_string(req->op.mod.message, "samAccountName", NULL));
+	} else {
+		samAccountName = talloc_strdup(tmp_ctx, ldb_msg_find_attr_as_string(acl_res->msgs[0], "samAccountName", NULL));
+	}
+	if (samAccountName == NULL) {
+		talloc_free(tmp_ctx);
+		return ldb_error(ldb, LDB_ERR_OPERATIONS_ERROR,
+				 "Error finding element samAccountName");
+	}
+	p = strrchr(samAccountName, '$');
+	if (p) {
+		*p = '\0';
+	}
+
+	/* Check the current domain dns */
+	domain_nc = ldb_get_default_basedn(ldb);
+	domain_dns_name = samdb_dn_to_dns_domain(tmp_ctx, domain_nc);
+	value_to_check = talloc_asprintf(tmp_ctx, "%s.%s", samAccountName, domain_dns_name);
+	if (strcasecmp(value_to_write, value_to_check) == 0) {
+		goto success;
+	}
+
+	/* Check the dns allowed suffixes */
+	ret = dsdb_module_search(module, tmp_ctx,
+				 &partition_res, partitions_dn,
+				 LDB_SCOPE_ONELEVEL,
+				 dnssuffixes_attrs,
+				 DSDB_FLAG_NEXT_MODULE |
+				 DSDB_FLAG_AS_SYSTEM,
+				 req,
+				 "(ncName=%s)",
+				 ldb_dn_get_linearized(domain_nc));
+	if (ret != LDB_SUCCESS) {
+		talloc_free(tmp_ctx);
+		return ldb_error(ldb, LDB_ERR_OPERATIONS_ERROR,
+				 "Error finding domain partition");
+	}
+
+	el = ldb_msg_find_element(partition_res->msgs[0], "msDS-AllowedDNSSuffixes");
+	if (el == NULL) {
+		goto fail;
+	}
+
+	for (i=0; i<el->num_values; i++) {
+		value_to_check = talloc_asprintf(tmp_ctx, "%s.%s",
+						 samAccountName,
+						 (char *)el->values[i].data);
+		if (strcasecmp(value_to_write, value_to_check) == 0) {
+			goto success;
+		}
+	}
+
+success:
+	talloc_free(tmp_ctx);
+	return LDB_SUCCESS;
+fail:
+	talloc_free(tmp_ctx);
+	return LDB_ERR_CONSTRAINT_VIOLATION;
+}
+
 static int acl_add(struct ldb_module *module, struct ldb_request *req)
 {
 	int ret;
@@ -1184,6 +1326,17 @@ static int acl_modify(struct ldb_module *module, struct ldb_request *req)
 			}
 		} else if (ldb_attr_cmp("servicePrincipalName", el->name) == 0) {
 			ret = acl_check_spn(tmp_ctx,
+					    module,
+					    req,
+					    sd,
+					    sid,
+					    attr,
+					    objectclass);
+			if (ret != LDB_SUCCESS) {
+				goto fail;
+			}
+		} else if (ldb_attr_cmp("dNSHostName", el->name) == 0) {
+			ret = acl_check_dnshostname(tmp_ctx,
 					    module,
 					    req,
 					    sd,
