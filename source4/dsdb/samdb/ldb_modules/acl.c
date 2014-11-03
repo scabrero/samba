@@ -688,8 +688,14 @@ static int acl_check_spn(TALLOC_CTX *mem_ctx,
 	}
 
 	userAccountControl = ldb_msg_find_attr_as_uint(acl_res->msgs[0], "userAccountControl", 0);
-	dnsHostName = ldb_msg_find_attr_as_string(acl_res->msgs[0], "dnsHostName", NULL);
 	samAccountName = ldb_msg_find_attr_as_string(acl_res->msgs[0], "samAccountName", NULL);
+
+	el = ldb_msg_find_element(req->op.mod.message, "dnsHostName");
+	if (el) {
+		dnsHostName = ldb_msg_find_attr_as_string(req->op.mod.message, "dnsHostName", NULL);
+	} else {
+		dnsHostName = ldb_msg_find_attr_as_string(acl_res->msgs[0], "dnsHostName", NULL);
+	}
 
 	ret = dsdb_module_search(module, tmp_ctx,
 				 &netbios_res, partitions_dn,
