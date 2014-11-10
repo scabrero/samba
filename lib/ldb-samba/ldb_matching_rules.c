@@ -108,11 +108,19 @@ static int ldb_eval_transitive_filter_helper(TALLOC_CTX *mem_ctx,
 	 */
 	if (visited == NULL) {
 		visited = talloc_array(mem_ctx, struct ldb_dn *, 1);
+		if (visited == NULL) {
+			talloc_free(tmp_ctx);
+			return LDB_ERR_OPERATIONS_ERROR;
+		}
 		visited[0] = to_visit;
 		(*visited_count) = 1;
 	} else {
 		visited = talloc_realloc(mem_ctx, visited, struct ldb_dn *,
 					 (*visited_count) + 1);
+		if (visited == NULL) {
+			talloc_free(tmp_ctx);
+			return LDB_ERR_OPERATIONS_ERROR;
+		}
 		visited[(*visited_count)] = to_visit;
 		(*visited_count)++;
 	}
