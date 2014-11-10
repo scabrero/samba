@@ -29,8 +29,8 @@ static int ldb_eval_transitive_filter_helper(TALLOC_CTX *mem_ctx,
 					     const char *attr,
 					     const struct dsdb_dn *dn_to_match,
 					     const char *dn_oid,
-					     struct ldb_dn *to_visit,
-					     struct ldb_dn **visited,
+					     struct dsdb_dn *to_visit,
+					     struct dsdb_dn **visited,
 					     unsigned int *visited_count,
 					     bool *matched)
 {
@@ -60,7 +60,7 @@ static int ldb_eval_transitive_filter_helper(TALLOC_CTX *mem_ctx,
 	 * Note also that we don't have the original request
 	 * here, so we can not apply controls or timeouts here.
 	 */
-	ret = dsdb_search_dn(ldb, tmp_ctx, &res, to_visit, attrs, 0);
+	ret = dsdb_search_dn(ldb, tmp_ctx, &res, to_visit->dn, attrs, 0);
 	if (ret != LDB_SUCCESS) {
 		talloc_free(tmp_ctx);
 		return ret;
@@ -107,7 +107,7 @@ static int ldb_eval_transitive_filter_helper(TALLOC_CTX *mem_ctx,
 	 * memory context.
 	 */
 	if (visited == NULL) {
-		visited = talloc_array(mem_ctx, struct ldb_dn *, 1);
+		visited = talloc_array(mem_ctx, struct dsdb_dn *, 1);
 		if (visited == NULL) {
 			talloc_free(tmp_ctx);
 			return LDB_ERR_OPERATIONS_ERROR;
@@ -115,7 +115,7 @@ static int ldb_eval_transitive_filter_helper(TALLOC_CTX *mem_ctx,
 		visited[0] = to_visit;
 		(*visited_count) = 1;
 	} else {
-		visited = talloc_realloc(mem_ctx, visited, struct ldb_dn *,
+		visited = talloc_realloc(mem_ctx, visited, struct dsdb_dn *,
 					 (*visited_count) + 1);
 		if (visited == NULL) {
 			talloc_free(tmp_ctx);
@@ -124,6 +124,12 @@ static int ldb_eval_transitive_filter_helper(TALLOC_CTX *mem_ctx,
 		visited[(*visited_count)] = to_visit;
 		(*visited_count)++;
 	}
+
+	/*
+	 * steal to_visit into visited array context, as it has to live until
+	 * the array is freed.
+	 */
+	talloc_steal(visited, to_visit);
 
 	/*
 	 * Iterate over the values of the attribute of the entry being
@@ -149,8 +155,9 @@ static int ldb_eval_transitive_filter_helper(TALLOC_CTX *mem_ctx,
 		 * the current entry DN.
 		 */
 		for (j=0; j < (*visited_count) - 1; j++) {
-			struct ldb_dn *visited_dn = visited[j];
-			if (ldb_dn_compare(visited_dn, next_to_visit->dn) == 0) {
+			struct dsdb_dn *visited_dn = visited[j];
+			if (ldb_dn_compare(visited_dn->dn,
+					   next_to_visit->dn) == 0) {
 				skip = true;
 				break;
 			}
@@ -163,7 +170,7 @@ static int ldb_eval_transitive_filter_helper(TALLOC_CTX *mem_ctx,
 		/* If the value is not in the visited array, evaluate it */
 		ret = ldb_eval_transitive_filter_helper(tmp_ctx, ldb, attr,
 							dn_to_match, dn_oid,
-							next_to_visit->dn,
+							next_to_visit,
 							visited, visited_count,
 							matched);
 		if (ret != LDB_SUCCESS) {
@@ -189,7 +196,7 @@ static int ldb_eval_transitive_filter(TALLOC_CTX *mem_ctx,
 				      struct ldb_context *ldb,
 				      const char *attr,
 				      const struct ldb_val *value_to_match,
-				      struct ldb_dn *current_object_dn,
+				      struct dsdb_dn *current_object_dn,
 				      bool *matched)
 {
 	const struct dsdb_schema *schema;
@@ -249,6 +256,8 @@ static int ldb_comparator_trans(struct ldb_context *ldb,
 {
 	const struct dsdb_schema *schema;
 	const struct dsdb_attribute *schema_attr;
+	struct ldb_dn *msg_dn;
+	struct dsdb_dn *dsdb_msg_dn;
 	TALLOC_CTX *tmp_ctx;
 	int ret;
 
@@ -278,10 +287,28 @@ static int ldb_comparator_trans(struct ldb_context *ldb,
 		return LDB_ERR_INAPPROPRIATE_MATCHING;
 	}
 
+	/* Duplicate original msg dn as the msg must not be modified */
+	msg_dn = ldb_dn_copy(tmp_ctx, msg->dn);
+	if (msg_dn == NULL) {
+		talloc_free(tmp_ctx);
+		return LDB_ERR_OPERATIONS_ERROR;
+	}
+
+	/*
+	 * Build a dsdb dn from the message copied DN, which should be a plain
+	 * DN syntax.
+	 */
+	dsdb_msg_dn = dsdb_dn_construct(tmp_ctx, msg_dn, data_blob_null,
+					LDB_SYNTAX_DN);
+	if (dsdb_msg_dn == NULL) {
+		*matched = false;
+		return LDB_ERR_INVALID_DN_SYNTAX;
+	}
+
 	ret = ldb_eval_transitive_filter(tmp_ctx, ldb,
 					 attribute_to_match,
 					 value_to_match,
-					 msg->dn, matched);
+					 dsdb_msg_dn, matched);
 	talloc_free(tmp_ctx);
 	return ret;
 }
