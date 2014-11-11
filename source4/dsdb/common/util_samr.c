@@ -239,6 +239,7 @@ NTSTATUS dsdb_add_user(struct ldb_context *ldb,
 	const char *name;
 	struct ldb_request *req;
 	struct ldb_message *msg;
+	struct dsdb_control_samr_create_user *control;
 	int ret;
 	const char *container, *obj_class=NULL;
 	char *cn_name;
@@ -444,14 +445,21 @@ NTSTATUS dsdb_add_user(struct ldb_context *ldb,
 			talloc_free(tmp_ctx);
 			return NT_STATUS_INTERNAL_ERROR;
 		}
+	}
 
-		ret = ldb_request_add_control(req, LDB_CONTROL_AS_SYSTEM_OID,
-					      false, NULL);
-		if (ret != LDB_SUCCESS) {
-			ldb_transaction_cancel(ldb);
-			talloc_free(tmp_ctx);
-			return NT_STATUS_INTERNAL_ERROR;
-		}
+	control = talloc_zero(tmp_ctx, struct dsdb_control_samr_create_user);
+	if (control == NULL) {
+		ldb_transaction_cancel(ldb);
+		talloc_free(tmp_ctx);
+		return NT_STATUS_NO_MEMORY;
+	}
+	control->account_type = acct_flags;
+
+	ret = ldb_request_add_control(req, DSDB_CONTROL_SAMR_CREATE_USER_OID, false, control);
+	if (ret != LDB_SUCCESS) {
+		ldb_transaction_cancel(ldb);
+		talloc_free(tmp_ctx);
+		return NT_STATUS_INTERNAL_ERROR;
 	}
 
 	/* create the user */
