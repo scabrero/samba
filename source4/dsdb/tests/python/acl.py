@@ -109,6 +109,18 @@ class AclTests(samba.tests.TestCase):
         else:
             self.fail()
 
+    def create_computer(self, target_ldb, computername, domainname, dn=None):
+        if dn is None:
+            dn = "CN=%s,CN=Computers,%s" % (computername, self.base_dn)
+        samaccountname = computername + "$"
+        dnshostname = "%s.%s" % (computername, domainname)
+        target_ldb.add({
+            "dn": dn,
+            "objectclass": "computer",
+            "sAMAccountName": samaccountname,
+            "userAccountControl": str(samba.dsdb.UF_WORKSTATION_TRUST_ACCOUNT),
+            "dNSHostName": dnshostname})
+
 #tests on ldap add operations
 class AclAddTests(AclTests):
 
@@ -122,6 +134,8 @@ class AclAddTests(AclTests):
         self.regular_user = "acl_add_user3"
         self.test_user1 = "test_add_user1"
         self.test_group1 = "test_add_group1"
+        self.test_computer1 = "test_add_computer1"
+        self.test_computer2 = "test_add_computer2"
         self.ou1 = "OU=test_add_ou1"
         self.ou2 = "OU=test_add_ou2,%s" % self.ou1
         self.ldb_admin.newuser(self.usr_admin_owner, self.user_pass)
@@ -144,6 +158,10 @@ class AclAddTests(AclTests):
                           (self.test_user1, self.ou2, self.base_dn))
         delete_force(self.ldb_admin, "CN=%s,%s,%s" %
                           (self.test_group1, self.ou2, self.base_dn))
+        delete_force(self.ldb_admin, "CN=%s,%s,%s" %
+                          (self.test_computer1, self.ou2, self.base_dn))
+        delete_force(self.ldb_admin, "CN=%s,%s,%s" %
+                          (self.test_computer2, "CN=Computers", self.base_dn))
         delete_force(self.ldb_admin, "%s,%s" % (self.ou2, self.base_dn))
         delete_force(self.ldb_admin, "%s,%s" % (self.ou1, self.base_dn))
         delete_force(self.ldb_admin, self.get_user_dn(self.usr_admin_owner))
@@ -244,6 +262,38 @@ class AclAddTests(AclTests):
         res = self.ldb_admin.search(self.base_dn,
                 expression="(distinguishedName=%s,%s)" % ("CN=test_add_group1,OU=test_add_ou2,OU=test_add_ou1", self.base_dn))
         self.assertTrue(len(res) > 0)
+
+    def test_add_u5(self):
+        """Testing OU with the rights of regular user granted the right 'Create Computer child objects' 
+        Part of the purpose of this test is to prove that creating computer accounts over LDAP is not permitted as an unprivileged user.
+        """
+        self.assert_top_ou_deleted()
+        # Change descriptor for top level OU
+        self.ldb_owner.create_ou("OU=test_add_ou1," + self.base_dn)
+        user_sid = self.sd_utils.get_object_sid(self.get_user_dn(self.regular_user))
+        mod = "(OA;CI;CC;bf967a86-0de6-11d0-a285-00aa003049e2;;%s)" % str(user_sid)
+        self.sd_utils.dacl_add_ace("OU=test_add_ou1," + self.base_dn, mod)
+        self.ldb_owner.create_ou("OU=test_add_ou2,OU=test_add_ou1," + self.base_dn)
+        # Test computer creation in a container where we are are specifically permitted, and then one where we are not
+        self.create_computer(self.ldb_user, self.test_computer1, "", "CN=%s,%s,%s" %
+                          (self.test_computer1, self.ou2, self.base_dn))
+        try:
+            self.create_computer(self.ldb_user, self.test_computer2, "")
+        except LdbError, (num, _):
+            self.assertEquals(num, ERR_INSUFFICIENT_ACCESS_RIGHTS)
+        else:
+            self.fail()
+        # Make sure we HAVE created the one of two objects -- computer1
+        res = self.ldb_admin.search(self.base_dn,
+                expression="(distinguishedName=%s,%s)" %
+                ("CN=test_add_computer1,OU=test_add_ou2,OU=test_add_ou1",
+                    self.base_dn))
+        self.assertNotEqual(len(res), 0)
+        res = self.ldb_admin.search(self.base_dn,
+                expression="(distinguishedName=%s,%s)" %
+                ("CN=test_add_computer2,CN=Computers",
+                    self.base_dn) )
+        self.assertEqual(len(res), 0)
 
     def test_add_anonymous(self):
         """Test add operation with anonymous user"""
@@ -1657,7 +1707,7 @@ class AclSPNTests(AclTests):
         self.ldb_admin.newuser(self.test_user, self.user_pass)
         self.ldb_user1 = self.get_ldb_connection(self.test_user, self.user_pass)
         self.user_sid1 = self.sd_utils.get_object_sid(self.get_user_dn(self.test_user))
-        self.create_computer(self.computername, self.dcctx.dnsdomain)
+        self.create_computer(self.ldb_admin, self.computername, self.dcctx.dnsdomain)
         self.create_rodc(self.rodcctx)
         self.create_dc(self.dcctx)
 
@@ -1682,17 +1732,6 @@ class AclSPNTests(AclTests):
         msg["servicePrincipalName"] = MessageElement(spn, flag,
                                                          "servicePrincipalName")
         _ldb.modify(msg)
-
-    def create_computer(self, computername, domainname):
-        dn = "CN=%s,CN=computers,%s" % (computername, self.base_dn)
-        samaccountname = computername + "$"
-        dnshostname = "%s.%s" % (computername, domainname)
-        self.ldb_admin.add({
-            "dn": dn,
-            "objectclass": "computer",
-            "sAMAccountName": samaccountname,
-            "userAccountControl": str(samba.dsdb.UF_WORKSTATION_TRUST_ACCOUNT),
-            "dNSHostName": dnshostname})
 
     # same as for join_RODC, but do not set any SPNs
     def create_rodc(self, ctx):
