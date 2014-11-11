@@ -928,9 +928,17 @@ static int acl_add(struct ldb_module *module, struct ldb_request *req)
 
 	objectclass = dsdb_get_structural_oc_from_msg(schema, req->op.add.message);
 	if (!objectclass) {
-		ldb_asprintf_errstring(ldb_module_get_ctx(module),
-				       "acl: unable to find or validate structural objectClass on %s\n",
-				       ldb_dn_get_linearized(req->op.add.message->dn));
+		struct ldb_element *el = ldb_msg_find_element(msg, "objectClass");
+		if (el) {
+			ldb_asprintf_errstring(ldb_module_get_ctx(module),
+					       "acl: unable to validate structural objectClass on %s (%d values provided)\n",
+					       ldb_dn_get_linearized(req->op.add.message->dn),
+					       el->num_values);
+		} else {
+			ldb_asprintf_errstring(ldb_module_get_ctx(module),
+					       "acl: unable to find objectClass on %s to obtain structural objectclass\n",
+					       ldb_dn_get_linearized(req->op.add.message->dn));
+		}
 		return ldb_module_done(req, NULL, NULL, LDB_ERR_OPERATIONS_ERROR);
 	}
 
