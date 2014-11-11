@@ -893,7 +893,7 @@ static int acl_add(struct ldb_module *module, struct ldb_request *req)
 	const struct dsdb_schema *schema;
 	const struct dsdb_class *objectclass;
 	struct ldb_control *as_system;
-	struct ldb_message_element *el;
+	struct ldb_message_element *el, *oc_el;
 	unsigned int instanceType = 0;
 
 	if (ldb_dn_is_special(req->op.add.message->dn)) {
@@ -921,19 +921,21 @@ static int acl_add(struct ldb_module *module, struct ldb_request *req)
 		return ldb_operr(ldb);
 	}
 
+	oc_el = ldb_msg_find_element(req->op.add.message, "objectClass");
+	if (oc_el == NULL) {
+		ldb_asprintf_errstring(ldb_module_get_ctx(module),
+				       "acl: unable to find objectClass on %s to obtain structural "
+				       "objectclass (needed to check create child ACL rights)\n",
+				       ldb_dn_get_linearized(req->op.add.message->dn));
+		return ldb_module_done(req, NULL, NULL, LDB_ERR_OPERATIONS_ERROR);
+	}
+	
 	objectclass = dsdb_get_structural_oc_from_msg(schema, req->op.add.message);
 	if (!objectclass) {
-		struct ldb_element *el = ldb_msg_find_element(msg, "objectClass");
-		if (el) {
-			ldb_asprintf_errstring(ldb_module_get_ctx(module),
-					       "acl: unable to validate structural objectClass on %s (%d values provided)\n",
-					       ldb_dn_get_linearized(req->op.add.message->dn),
-					       el->num_values);
-		} else {
-			ldb_asprintf_errstring(ldb_module_get_ctx(module),
-					       "acl: unable to find objectClass on %s to obtain structural objectclass\n",
-					       ldb_dn_get_linearized(req->op.add.message->dn));
-		}
+		ldb_asprintf_errstring(ldb_module_get_ctx(module),
+				       "acl: unable to validate structural objectClass on %s (%d values provided)\n",
+				       ldb_dn_get_linearized(req->op.add.message->dn),
+				       oc_el->num_values);
 		return ldb_module_done(req, NULL, NULL, LDB_ERR_OPERATIONS_ERROR);
 	}
 
