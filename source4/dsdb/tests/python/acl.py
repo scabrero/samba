@@ -14,6 +14,7 @@ from samba.tests.subunitrun import SubunitOptions, TestProgram
 import samba.getopt as options
 from samba.join import dc_join
 
+import ldb
 from ldb import (
     SCOPE_BASE, SCOPE_SUBTREE, LdbError, ERR_NO_SUCH_OBJECT,
     ERR_UNWILLING_TO_PERFORM, ERR_INSUFFICIENT_ACCESS_RIGHTS)
@@ -109,17 +110,51 @@ class AclTests(samba.tests.TestCase):
         else:
             self.fail()
 
-    def create_computer(self, target_ldb, computername, domainname, dn=None):
+# Computer ADD operations have to look like this if they are to succeed with only SeMachineAccount privilege and not 'create child' rights.
+# dn: CN=WINDOWS7-3-2,CN=Computers,DC=s4,DC=abartlet,DC=wgtn,DC=cat-it,DC=co,DC=nz
+# changetype: add
+# objectClass: Computer
+# SamAccountName: WINDOWS7-3-2$
+# userAccountControl: 4096
+# DnsHostName: WINDOWS7-3-2.s4.abartlet.wgtn.cat-it.co.nz
+# ServicePrincipalName: HOST/WINDOWS7-3-2.s4.abartlet.wgtn.cat-it.co.nz
+# ServicePrincipalName: RestrictedKrbHost/WINDOWS7-3-2.s4.abartlet.wgtn.cat-it.c
+#  o.nz
+# ServicePrincipalName: HOST/WINDOWS7-3-2
+# ServicePrincipalName: RestrictedKrbHost/WINDOWS7-3-2
+# unicodePwd:: IgBNACwAMQA2ADMATABBAHYAIgBtAEwAUAAlAF0ANgBdAEQAIgAzAGAAawAnAFsAY
+#  wA7AF0AUgA8AEcAcQAxAEQAaAAkAEIARgBYAGsARQA0AC4AOQByAG4AegAnAEAAQgBvAHEAVQBdAG
+#  4AWAAgAD0APgBBAHMAJQA3AE8AYwBJAGUAZAAoAGEAPgA+ADMAPQAgACkASAAgADsAUgBgAGQAbwB
+#  HADoAQQA1AFkAegBBAEUAdABDAFYAegBMADAAagBbAFcAbABMAGwAVgBqADwAJQBhAEQAcQBdAHQA
+#  NwBdAGoAKAA9AFEAeABAACUAbAAiAA==
+
+    def create_computer(self, target_ldb, computername, domainname=None, dn=None, 
+                        uac=None, set_password=None):
         if dn is None:
             dn = "CN=%s,CN=Computers,%s" % (computername, self.base_dn)
         samaccountname = computername + "$"
+        if domainname is None:
+            domainname = ldb.Dn(target_ldb, target_ldb.domain_dn()).canonical_str().replace("/", "")
         dnshostname = "%s.%s" % (computername, domainname)
-        target_ldb.add({
+        if uac is None:
+            uac = samba.dsdb.UF_WORKSTATION_TRUST_ACCOUNT
+            if set_password is None:
+                uac += samba.dsdb.UF_ACCOUNTDISABLE
+        msg = ldb.Message.from_dict(target_ldb, {
             "dn": dn,
             "objectclass": "computer",
             "sAMAccountName": samaccountname,
-            "userAccountControl": str(samba.dsdb.UF_WORKSTATION_TRUST_ACCOUNT),
-            "dNSHostName": dnshostname})
+            "userAccountControl": str(uac),
+            "dNSHostName": dnshostname,
+            "servicePrincipalName": ["HOST/%s" % dnshostname,
+                                     "HOST/%s" % computername]
+        })
+        if set_password is not None:
+            pw = unicode('"' + set_password + '"', 'utf-8').encode('utf-16-le')
+            msg["unicodePwd"] = pw
+
+        target_ldb.add(msg)
+                       
 
 #tests on ldap add operations
 class AclAddTests(AclTests):
@@ -136,6 +171,7 @@ class AclAddTests(AclTests):
         self.test_group1 = "test_add_group1"
         self.test_computer1 = "test_add_computer1"
         self.test_computer2 = "test_add_computer2"
+        self.test_computer3 = "test_add_computer3"
         self.ou1 = "OU=test_add_ou1"
         self.ou2 = "OU=test_add_ou2,%s" % self.ou1
         self.ldb_admin.newuser(self.usr_admin_owner, self.user_pass)
@@ -162,6 +198,8 @@ class AclAddTests(AclTests):
                           (self.test_computer1, self.ou2, self.base_dn))
         delete_force(self.ldb_admin, "CN=%s,%s,%s" %
                           (self.test_computer2, "CN=Computers", self.base_dn))
+        delete_force(self.ldb_admin, "CN=%s,%s,%s" %
+                          (self.test_computer3, "CN=Computers", self.base_dn))
         delete_force(self.ldb_admin, "%s,%s" % (self.ou2, self.base_dn))
         delete_force(self.ldb_admin, "%s,%s" % (self.ou1, self.base_dn))
         delete_force(self.ldb_admin, self.get_user_dn(self.usr_admin_owner))
@@ -274,26 +312,36 @@ class AclAddTests(AclTests):
         mod = "(OA;CI;CC;bf967a86-0de6-11d0-a285-00aa003049e2;;%s)" % str(user_sid)
         self.sd_utils.dacl_add_ace("OU=test_add_ou1," + self.base_dn, mod)
         self.ldb_owner.create_ou("OU=test_add_ou2,OU=test_add_ou1," + self.base_dn)
-        # Test computer creation in a container where we are are specifically permitted, and then one where we are not
-        self.create_computer(self.ldb_user, self.test_computer1, "", "CN=%s,%s,%s" %
-                          (self.test_computer1, self.ou2, self.base_dn))
+        # Test computer creation in a container where we are are
+        # specifically permitted (but with a userAccountControl that
+        # would not pass the test), and then one where we are not, and
+        # so has to have the 'right' userAccountControl
+
+        self.create_computer(self.ldb_user, self.test_computer1,
+                             dn="CN=%s,%s,%s" % (self.test_computer1, self.ou2, self.base_dn),
+                             uac=samba.dsdb.UF_WORKSTATION_TRUST_ACCOUNT)
+
         try:
-            self.create_computer(self.ldb_user, self.test_computer2, "")
+            # Because the account is not disabled, a user with SeMachineAccount privilege can not create it
+            self.create_computer(self.ldb_user, self.test_computer2, uac=samba.dsdb.UF_WORKSTATION_TRUST_ACCOUNT)
         except LdbError, (num, _):
-            self.assertEquals(num, ERR_INSUFFICIENT_ACCESS_RIGHTS)
+            self.assertEquals(num, ERR_UNWILLING_TO_PERFORM)
         else:
             self.fail()
+
+        self.create_computer(self.ldb_user, self.test_computer2, None)
+        self.create_computer(self.ldb_user, self.test_computer3, set_password="thatsAcomplPASS1")
         # Make sure we HAVE created the one of two objects -- computer1
         res = self.ldb_admin.search(self.base_dn,
                 expression="(distinguishedName=%s,%s)" %
                 ("CN=test_add_computer1,OU=test_add_ou2,OU=test_add_ou1",
                     self.base_dn))
-        self.assertNotEqual(len(res), 0)
+        self.assertEqual(len(res), 1)
         res = self.ldb_admin.search(self.base_dn,
                 expression="(distinguishedName=%s,%s)" %
                 ("CN=test_add_computer2,CN=Computers",
                     self.base_dn) )
-        self.assertEqual(len(res), 0)
+        self.assertEqual(len(res), 1)
 
     def test_add_anonymous(self):
         """Test add operation with anonymous user"""
@@ -1939,7 +1987,5 @@ class AclSPNTests(AclTests):
 
 
 # Important unit running information
-
-ldb = SamDB(ldaphost, credentials=creds, session_info=system_session(lp), lp=lp)
 
 TestProgram(module=__name__, opts=subunitopts)
