@@ -1555,28 +1555,30 @@ userPassword: thatsAcomplPASS2
 dn: """ + self.get_user_dn(self.user_with_pc) + """
 changetype: modify
 delete: unicodePwd
-unicodePwd:: """ + base64.b64encode("\"samba123@\"".encode('utf-16-le')) + """
+unicodePwd:: """ + base64.b64encode('"samba123@"'.encode('utf-16-le')) + """
 add: unicodePwd
-unicodePwd:: """ + base64.b64encode("\"thatsAcomplPASS1\"".encode('utf-16-le')) + """
+unicodePwd:: """ + base64.b64encode('"thatsAcomplPASS1"'.encode('utf-16-le')) + """
 """)
         #then someone else's
         self.ldb_user2.modify_ldif("""
 dn: """ + self.get_user_dn(self.user_with_wp) + """
 changetype: modify
 delete: unicodePwd
-unicodePwd:: """ + base64.b64encode("\"samba123@\"".encode('utf-16-le')) + """
+unicodePwd:: """ + base64.b64encode('"samba123@"'.encode('utf-16-le')) + """
 add: unicodePwd
-unicodePwd:: """ + base64.b64encode("\"thatsAcomplPASS2\"".encode('utf-16-le')) + """
+unicodePwd:: """ + base64.b64encode('"thatsAcomplPASS2"'.encode('utf-16-le')) + """
 """)
 
     def test_reset_password1(self):
         """Try a user password reset operation (unicodePwd) before and after granting CAR"""
+        new_password = "thatsAcomplPASS1"
+        pw = unicode('"' + new_password + '"', 'utf-8').encode('utf-16-le')
         try:
             self.ldb_user.modify_ldif("""
 dn: """ + self.get_user_dn(self.user_with_wp) + """
 changetype: modify
 replace: unicodePwd
-unicodePwd:: """ + base64.b64encode("\"thatsAcomplPASS1\"".encode('utf-16-le')) + """
+unicodePwd:: """ + base64.b64encode(pw) + """
 """)
         except LdbError, (num, _):
             self.assertEquals(num, ERR_INSUFFICIENT_ACCESS_RIGHTS)
@@ -1588,7 +1590,7 @@ unicodePwd:: """ + base64.b64encode("\"thatsAcomplPASS1\"".encode('utf-16-le')) 
 dn: """ + self.get_user_dn(self.user_with_wp) + """
 changetype: modify
 replace: unicodePwd
-unicodePwd:: """ + base64.b64encode("\"thatsAcomplPASS1\"".encode('utf-16-le')) + """
+unicodePwd:: """ + base64.b64encode(pw) + """
 """)
 
     def test_reset_password2(self):
@@ -1653,11 +1655,14 @@ userPassword: thatsAcomplPASS1
         """Explicitly deny WP but grant CAR (unicodePwd)"""
         mod = "(D;;WP;;;PS)(OA;;CR;00299570-246d-11d0-a768-00aa006e0529;;PS)"
         self.sd_utils.dacl_add_ace(self.get_user_dn(self.user_with_wp), mod)
+        new_password = "thatsAcomplPASS1"
+        pw = unicode('"' + new_password + '"', 'utf-8').encode('utf-16-le')
+
         self.ldb_user.modify_ldif("""
 dn: """ + self.get_user_dn(self.user_with_wp) + """
 changetype: modify
 replace: unicodePwd
-unicodePwd:: """ + base64.b64encode("\"thatsAcomplPASS1\"".encode('utf-16-le')) + """
+unicodePwd:: """ + base64.b64encode(pw) + """
 """)
 
     def test_reset_password6(self):
