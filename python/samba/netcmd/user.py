@@ -164,6 +164,8 @@ Example4 shows how to create a new user with Unix UID, GID and login-shell set f
             if not lp.get("idmap_ldb:use rfc2307"):
                 self.outf.write("You are setting a Unix/RFC2307 UID or GID. You may want to set 'idmap_ldb:use rfc2307 = Yes' to use those attributes for XID/SID-mapping.\n")
 
+        creds.set_gensec_features(creds.get_gensec_features() | gensec.FEATURE_SEAL)
+        
         try:
             samdb = SamDB(url=H, session_info=system_session(),
                           credentials=creds, lp=lp)
