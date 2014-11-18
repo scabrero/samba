@@ -42,6 +42,7 @@
 #include "lib/util/tsort.h"
 #include "system/kerberos.h"
 #include "auth/kerberos/kerberos.h"
+#include "libcli/ldap/ldap_ndr.h"
 
 struct extended_access_check_attribute {
 	const char *oa_name;
@@ -890,6 +891,231 @@ fail:
 	return LDB_ERR_CONSTRAINT_VIOLATION;
 }
 
+static int acl_check_machine_quota(struct ldb_module *module,
+				   struct ldb_request *req,
+				   const struct dom_sid *creator_sid)
+{
+	int ret;
+	TALLOC_CTX *tmp_ctx;
+	struct ldb_result *res;
+	struct ldb_context *ldb;
+	struct ldb_message *msg;
+	struct ldb_dn *base_dn;
+	int quota;
+	const char *quota_attrs[] = {
+		"ms-DS-MachineAccountQuota",
+		NULL,
+	};
+	const char *creator_attrs[] = {
+		"mS-DS-CreatorSID",
+		NULL,
+	};
+
+	tmp_ctx = talloc_new(req);
+	if (tmp_ctx == NULL) {
+		return LDB_ERR_OPERATIONS_ERROR;
+	}
+
+	ldb = ldb_module_get_ctx(module);
+	base_dn = ldb_get_default_basedn(ldb);
+
+	/* Read the quota */
+	ret = dsdb_module_search_dn(module, tmp_ctx, &res,
+				    base_dn,
+				    quota_attrs,
+				    DSDB_FLAG_TOP_MODULE |
+				    DSDB_FLAG_AS_SYSTEM,
+				    req);
+	if (ret != LDB_SUCCESS) {
+		talloc_free(tmp_ctx);
+		return LDB_ERR_OPERATIONS_ERROR;
+	}
+	if (res->count != 1) {
+		talloc_free(tmp_ctx);
+		return LDB_ERR_OPERATIONS_ERROR;
+	}
+	msg = res->msgs[0];
+	quota = ldb_msg_find_attr_as_int(msg, "ms-DS-MachineAccountQuota", 10);
+	talloc_free(res);
+
+	/* Check the quota */
+	ret = dsdb_module_search(module, tmp_ctx, &res, base_dn,
+				 LDB_SCOPE_SUBTREE,
+				 creator_attrs,
+				 DSDB_FLAG_NEXT_MODULE | DSDB_FLAG_AS_SYSTEM,
+				 req,
+				 "(mS-DS-CreatorSID=%s)",
+				 ldap_encode_ndr_dom_sid(tmp_ctx, creator_sid));
+	if (ret != LDB_SUCCESS) {
+		talloc_free(tmp_ctx);
+		return ret;
+	}
+	if (res->count >= quota) {
+		DEBUG(0, ("acl: Machine quota exceeded\n"));
+		talloc_free(tmp_ctx);
+		return LDB_ERR_UNWILLING_TO_PERFORM;
+	}
+
+	talloc_free(tmp_ctx);
+
+	return LDB_SUCCESS;
+}
+
+/**
+ * Check user token privileges after an LDB_ERR_INSUFFICIENT_ACCESS_RIGHTS
+ */
+static int acl_add_privileges(struct ldb_module *module,
+				    struct ldb_request *req)
+{
+	struct loadparm_context *lp_ctx;
+	struct auth_session_info *sinfo;
+	int ret;
+	enum ndr_err_code ndr_err;
+	struct ldb_context *ldb;
+
+	ldb = ldb_module_get_ctx(module);
+
+	sinfo = talloc_get_type_abort(ldb_get_opaque(ldb, "sessionInfo"),
+				      struct auth_session_info);
+	if (sinfo == NULL) {
+		return ldb_operr(ldb);
+	}
+
+	lp_ctx = talloc_get_type_abort(ldb_get_opaque(ldb, "loadparm"),
+				       struct loadparm_context);
+	if (lp_ctx == NULL) {
+		return ldb_operr(ldb);
+	}
+
+	/*
+	 * Check seMachineAccount privilege. [MS-ADTS] section 3.1.1.5.2.1 and
+	 * [MS-SAMR] 3.1.5.4.4
+	 */
+	if (samdb_find_attribute(ldb, req->op.add.message, "objectclass", "computer") != NULL) {
+		const struct dom_sid *creator_sid;
+		const struct dom_sid *domain_sid;
+		const struct ldb_val *sd_val;
+		struct security_descriptor *sd;
+		struct ldb_request *add_req;
+		struct ldb_message *msg;
+		unsigned int uac;
+		DATA_BLOB data;
+
+		/* On non-DC configurations, return access denied */
+		if (lpcfg_server_role(lp_ctx) != ROLE_ACTIVE_DIRECTORY_DC) {
+			return LDB_ERR_INSUFFICIENT_ACCESS_RIGHTS;
+		}
+
+		/* Check the seMachineAccount privilege */
+		if (!security_token_has_privilege(sinfo->security_token, SEC_PRIV_MACHINE_ACCOUNT)) {
+			return LDB_ERR_INSUFFICIENT_ACCESS_RIGHTS;
+		}
+
+		/* Check supplied attribtues */
+		if (!ldb_msg_find_ldb_val(req->op.add.message, "dNSHostName")) {
+			DEBUG(0, ("acl: Missing dNSHostName attribute in add computer request using elevated seMachineAccount privilege\n"));
+			return LDB_ERR_OPERATIONS_ERROR;
+		}
+		if (!ldb_msg_find_ldb_val(req->op.add.message, "servicePrincipalName")) {
+			DEBUG(0, ("acl: Missing servicePrincipalName attribute in add computer request using elevated seMachineAccount privilege\n"));
+			return LDB_ERR_OPERATIONS_ERROR;
+		}
+		if (!ldb_msg_find_ldb_val(req->op.add.message, "userAccountControl")) {
+			DEBUG(0, ("acl: Missing userAccountControl attribute in add computer request using elevated seMachineAccount privilege\n"));
+			return LDB_ERR_OPERATIONS_ERROR;
+		} else {
+			uac = ldb_msg_find_attr_as_uint(req->op.add.message, "userAccountControl", 0);
+			if (!(uac & UF_WORKSTATION_TRUST_ACCOUNT)) {
+				DEBUG(0, ("acl: Invalid userAccountControl attribute value in add computer request using elevated seMachineAccount privilege\n"));
+				return LDB_ERR_CONSTRAINT_VIOLATION;
+			}
+			if (uac & ~(UF_WORKSTATION_TRUST_ACCOUNT | UF_ACCOUNTDISABLE)) {
+				DEBUG(0, ("acl: Invalid userAccountControl attribute value in add computer request using elevated seMachineAccount privilege\n"));
+				return LDB_ERR_CONSTRAINT_VIOLATION;
+			}
+		}
+		if (!ldb_msg_find_ldb_val(req->op.add.message, "sAMAccountName")) {
+			DEBUG(0, ("acl: Missing sAMAccountName attribute in add computer request using elevated seMachineAccount privilege\n"));
+			return LDB_ERR_OPERATIONS_ERROR;
+		}
+		if (!(uac & UF_ACCOUNTDISABLE)) {
+			if (!ldb_msg_find_ldb_val(req->op.add.message, "unicodePwd")) {
+				DEBUG(0, ("acl: Missing unicodePwd attribute in add computer request using elevated seMachineAccount privilege\n"));
+				return LDB_ERR_OPERATIONS_ERROR;
+			}
+		}
+
+		/* Check the quota */
+		creator_sid = &sinfo->security_token->sids[0];
+		ret = acl_check_machine_quota(module, req, creator_sid);
+		if (ret != LDB_SUCCESS) {
+			return ret;
+		}
+
+		msg = ldb_msg_copy_shallow(req, req->op.add.message);
+		if (msg == NULL) {
+			return ldb_oom(ldb);
+		}
+
+		/* Append msDS-CreatorSID */
+		creator_sid = &sinfo->security_token->sids[0];
+		ndr_err = ndr_push_struct_blob(&data, msg, creator_sid,
+				(ndr_push_flags_fn_t)ndr_push_dom_sid);
+		if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
+			return ldb_operr(ldb);
+		}
+		ret = ldb_msg_add_steal_value(msg, "mS-DS-CreatorSID", &data);
+		if (ret != LDB_SUCCESS) {
+			return ret;
+		}
+
+		/* Replace SD owner and group */
+		sd_val = ldb_msg_find_ldb_val(req->op.add.message, "nTSecurityDescriptor");
+		if (sd_val == NULL) {
+			return ldb_operr(ldb);
+		}
+
+		sd = talloc_zero(msg, struct security_descriptor);
+		if (sd == NULL) {
+			return ldb_operr(ldb);
+		}
+
+		ndr_err = ndr_pull_struct_blob(sd_val, msg, sd, (ndr_pull_flags_fn_t)ndr_pull_security_descriptor);
+		if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
+			talloc_free(sd);
+			return ldb_operr(ldb);
+		}
+		ldb_msg_remove_attr(msg, "nTSecurityDescriptor");
+
+		domain_sid = samdb_domain_sid(ldb);
+		sd->group_sid = dom_sid_add_rid(sd, domain_sid, DOMAIN_RID_USERS);
+		sd->owner_sid = dom_sid_add_rid(sd, domain_sid, DOMAIN_RID_ADMINS);
+
+		ndr_err = ndr_push_struct_blob(&data, msg, sd,
+				(ndr_push_flags_fn_t)ndr_push_security_descriptor);
+		if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
+			return ldb_operr(ldb);
+		}
+		ret = ldb_msg_add_steal_value(msg, "nTSecurityDescriptor", &data);
+		if (ret != LDB_SUCCESS) {
+			return ret;
+		}
+
+		ret = ldb_build_add_req(&add_req, ldb, req,
+					msg,
+					req->controls,
+					req, dsdb_next_callback,
+					req);
+		if (ret != LDB_SUCCESS) {
+			return ret;
+		}
+
+		return ldb_next_request(module, add_req);
+	}
+
+	return LDB_ERR_INSUFFICIENT_ACCESS_RIGHTS;
+}
+
 static int acl_add(struct ldb_module *module, struct ldb_request *req)
 {
 	int ret;
@@ -1023,6 +1249,11 @@ static int acl_add(struct ldb_module *module, struct ldb_request *req)
 	ret = dsdb_module_check_access_on_dn(module, req, parent,
 					     SEC_ADS_CREATE_CHILD,
 					     &objectclass->schemaIDGUID, req);
+	if (ret == LDB_ERR_INSUFFICIENT_ACCESS_RIGHTS) {
+		/* Check for privileges */
+		return acl_add_privileges(module, req);
+	}
+
 	if (ret != LDB_SUCCESS) {
 		ldb_asprintf_errstring(ldb_module_get_ctx(module),
 				       "acl: unable to find or validate structural objectClass on %s\n",
