@@ -922,9 +922,11 @@ static int acl_check_machine_quota(struct ldb_module *module,
 				    DSDB_FLAG_AS_SYSTEM,
 				    req);
 	if (ret != LDB_SUCCESS) {
+		talloc_free(tmp_ctx);
 		return LDB_ERR_OPERATIONS_ERROR;
 	}
 	if (res->count != 1) {
+		talloc_free(tmp_ctx);
 		return LDB_ERR_OPERATIONS_ERROR;
 	}
 	msg = res->msgs[0];
@@ -940,10 +942,12 @@ static int acl_check_machine_quota(struct ldb_module *module,
 				 "(mS-DS-CreatorSID=%s)",
 				 ldap_encode_ndr_dom_sid(tmp_ctx, creator_sid));
 	if (ret != LDB_SUCCESS) {
+		talloc_free(tmp_ctx);
 		return ret;
 	}
 	if (res->count >= quota) {
 		DEBUG(0, ("acl: Machine quota exceeded\n"));
+		talloc_free(tmp_ctx);
 		return LDB_ERR_UNWILLING_TO_PERFORM;
 	}
 
