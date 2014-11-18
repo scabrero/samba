@@ -27,7 +27,7 @@
 #include "dsdb/common/util.h"
 #include "../libds/common/flags.h"
 #include "libcli/security/security.h"
-
+#include "param/param.h"
 #include "libds/common/flag_mapping.h"
 
 /* Add a user, SAMR style, including the correct transaction
@@ -111,6 +111,9 @@ NTSTATUS dsdb_add_user(struct ldb_context *ldb,
 		obj_class = "user";
 		user_account_control = UF_NORMAL_ACCOUNT;
 	} else if (acct_flags == ACB_WSTRUST) {
+		struct loadparm_context *lp_ctx;
+		char *dns_name, *spn1, *spn2;
+
 		if (cn_name[cn_name_len - 1] != '$') {
 			ldb_transaction_cancel(ldb);
 			return NT_STATUS_FOOBAR;
@@ -120,6 +123,26 @@ NTSTATUS dsdb_add_user(struct ldb_context *ldb,
 		obj_class = "computer";
 		user_account_control = UF_WORKSTATION_TRUST_ACCOUNT;
 
+		lp_ctx = talloc_get_type_abort(ldb_get_opaque(ldb, "loadparm"),
+					       struct loadparm_context);
+		if (lp_ctx == NULL) {
+			ldb_transaction_cancel(ldb);
+			talloc_free(tmp_ctx);
+			return NT_STATUS_INTERNAL_ERROR;
+		}
+
+		dns_name = talloc_asprintf(msg, "%s.%s", cn_name, lpcfg_dnsdomain(lp_ctx));
+		spn1 = talloc_asprintf(msg, "HOST/%s", dns_name);
+		spn2 = talloc_asprintf(msg, "HOST/%s", cn_name);
+		if (dns_name == NULL || spn1 == NULL || spn2 == NULL) {
+			ldb_transaction_cancel(ldb);
+			talloc_free(tmp_ctx);
+			return NT_STATUS_NO_MEMORY;
+		}
+
+		ldb_msg_add_string(msg, "dNSHostName", dns_name);
+		ldb_msg_add_string(msg, "servicePrincipalName", spn1);
+		ldb_msg_add_string(msg, "servicePrincipalName", spn2);
 	} else if (acct_flags == ACB_SVRTRUST) {
 		if (cn_name[cn_name_len - 1] != '$') {
 			ldb_transaction_cancel(ldb);
