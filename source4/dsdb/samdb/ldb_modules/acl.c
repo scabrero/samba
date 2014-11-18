@@ -937,7 +937,7 @@ static int acl_check_machine_quota(struct ldb_module *module,
 	ret = dsdb_module_search(module, tmp_ctx, &res, base_dn,
 				 LDB_SCOPE_SUBTREE,
 				 creator_attrs,
-				 DSDB_FLAG_TOP_MODULE | DSDB_FLAG_AS_SYSTEM,
+				 DSDB_FLAG_NEXT_MODULE | DSDB_FLAG_AS_SYSTEM,
 				 req,
 				 "(mS-DS-CreatorSID=%s)",
 				 ldap_encode_ndr_dom_sid(tmp_ctx, creator_sid));
