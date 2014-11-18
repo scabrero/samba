@@ -893,7 +893,6 @@ static int acl_add(struct ldb_module *module, struct ldb_request *req)
 	const struct dsdb_schema *schema;
 	const struct dsdb_class *objectclass;
 	struct ldb_control *as_system;
-	struct ldb_control *samr_create_user;
 	struct ldb_message_element *el, *oc_el;
 	unsigned int instanceType = 0;
 
@@ -1013,11 +1012,6 @@ static int acl_add(struct ldb_module *module, struct ldb_request *req)
 		 * master and adding the crossRef object need to be
 		 * handled in the instanceType module
 		 */
-		return ldb_next_request(module, req);
-	}
-
-	samr_create_user = ldb_request_get_control(req, DSDB_CONTROL_SAMR_CREATE_USER_OID);
-	if (samr_create_user != NULL) {
 		return ldb_next_request(module, req);
 	}
 

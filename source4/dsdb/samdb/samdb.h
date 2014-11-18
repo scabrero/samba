@@ -135,15 +135,6 @@ struct dsdb_control_password_change {
  */
 #define DSDB_CONTROL_SEC_DESC_PROPAGATION_OID "1.3.6.1.4.1.7165.4.3.21"
 
-/*
- * passed to skip ACL checks on SAMR CreateUser2, as the security model must
- * not be adhered in this specific operation. See [MS-SAMR] 3.1.5.4.4
- */
-#define DSDB_CONTROL_SAMR_CREATE_USER_OID "1.3.6.1.4.1.7165.4.3.22"
-struct dsdb_control_samr_create_user {
-	uint32_t account_type;
-};
-
 #define DSDB_EXTENDED_REPLICATED_OBJECTS_OID "1.3.6.1.4.1.7165.4.4.1"
 struct dsdb_extended_replicated_object {
 	struct ldb_message *msg;
