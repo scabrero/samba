@@ -993,6 +993,7 @@ static int acl_add_privileges(struct ldb_module *module,
 		struct security_descriptor *sd;
 		struct ldb_request *add_req;
 		struct ldb_message *msg;
+		struct ldb_control *samr_request;
 		unsigned int uac;
 		DATA_BLOB data;
 
@@ -1006,15 +1007,25 @@ static int acl_add_privileges(struct ldb_module *module,
 			return LDB_ERR_INSUFFICIENT_ACCESS_RIGHTS;
 		}
 
-		/* Check supplied attribtues */
-		if (!ldb_msg_find_ldb_val(req->op.add.message, "dNSHostName")) {
-			DEBUG(0, ("acl: Missing dNSHostName attribute in add computer request using elevated seMachineAccount privilege\n"));
-			return LDB_ERR_OPERATIONS_ERROR;
+		/*
+		 * Check supplied attribtues
+		 *
+		 * If the request comes through SAM-R pipe instead LDAP
+		 * interface, relax constrains on dNSHostName and
+		 * servicePrincipalName attributes
+		 */
+		samr_request = ldb_request_get_control(req, DSDB_CONTROL_SAMR_CREATE_COMPUTER_ACCOUNT);
+		if (samr_request == NULL) {
+			if (!ldb_msg_find_ldb_val(req->op.add.message, "dNSHostName")) {
+				DEBUG(0, ("acl: Missing dNSHostName attribute in add computer request using elevated seMachineAccount privilege\n"));
+				return LDB_ERR_OPERATIONS_ERROR;
+			}
+			if (!ldb_msg_find_ldb_val(req->op.add.message, "servicePrincipalName")) {
+				DEBUG(0, ("acl: Missing servicePrincipalName attribute in add computer request using elevated seMachineAccount privilege\n"));
+				return LDB_ERR_OPERATIONS_ERROR;
+			}
 		}
-		if (!ldb_msg_find_ldb_val(req->op.add.message, "servicePrincipalName")) {
-			DEBUG(0, ("acl: Missing servicePrincipalName attribute in add computer request using elevated seMachineAccount privilege\n"));
-			return LDB_ERR_OPERATIONS_ERROR;
-		}
+
 		if (!ldb_msg_find_ldb_val(req->op.add.message, "userAccountControl")) {
 			DEBUG(0, ("acl: Missing userAccountControl attribute in add computer request using elevated seMachineAccount privilege\n"));
 			return LDB_ERR_OPERATIONS_ERROR;

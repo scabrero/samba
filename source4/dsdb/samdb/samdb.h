@@ -135,6 +135,12 @@ struct dsdb_control_password_change {
  */
 #define DSDB_CONTROL_SEC_DESC_PROPAGATION_OID "1.3.6.1.4.1.7165.4.3.21"
 
+/*
+ * passed when creating a computer account through SAMR-R CreateUser or
+ * CreateUser2 to relax constrains in the acl ldb module.
+ */
+#define DSDB_CONTROL_SAMR_CREATE_COMPUTER_ACCOUNT "1.3.6.1.4.1.7165.4.3.22"
+
 #define DSDB_EXTENDED_REPLICATED_OBJECTS_OID "1.3.6.1.4.1.7165.4.4.1"
 struct dsdb_extended_replicated_object {
 	struct ldb_message *msg;
