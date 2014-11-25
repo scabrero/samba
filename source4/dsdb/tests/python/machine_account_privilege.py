@@ -125,7 +125,7 @@ class MachineAccountPrivilegeTests(samba.tests.TestCase):
             delete_force(self.admin_samdb, "CN=%s,CN=Computers,%s" % (computername, self.base_dn))
         delete_force(self.admin_samdb, "CN=%s,CN=Users,%s" % (self.unpriv_user, self.base_dn))
 
-    def check_computer_account(self, sid=None, computername=None):
+    def check_computer_account(self, sid=None, computername=None, dnshostname=None):
         def arcfour_encrypt(key, data):
             from Crypto.Cipher import ARC4
             c = ARC4.new(key)
@@ -137,33 +137,46 @@ class MachineAccountPrivilegeTests(samba.tests.TestCase):
                 blob[i] = ord(string[i])
             return blob
 
-	if sid is not None:
+        attrs=["nTSecurityDescriptor", "mS-DS-CreatorSID", "objectSID", "dnsHostName",
+               "servicePrincipalName", "objectClass", "objectCategory"]
+        
+        if sid is not None:
 	        print "Checking %s" % sid
 	        res = self.admin_samdb.search("<SID=%s>" % sid,
 	                                      scope=SCOPE_BASE,
-	                                      attrs=["nTSecurityDescriptor", "ms-DS-CreatorSID", "objectSID"])
+                                              attrs=attrs)
 	else:
 	        print "Checking %s" % computername
 	        res = self.admin_samdb.search("CN=%s,CN=Computers,%s" % (computername, self.base_dn),
 	                                      scope=SCOPE_BASE,
-	                                      attrs=["nTSecurityDescriptor", "ms-DS-CreatorSID", "objectSID"])
+	                                      attrs=attrs)
 	
-	        self.assertNotEqual(len(res), 0)
-	            
+        self.assertNotEqual(len(res), 0)
+        print res[0]
+        self.assertTrue("mS-DS-CreatorSID" in res[0])
         creator_sid = ndr_unpack(security.dom_sid, res[0]["ms-DS-CreatorSID"][0])
 	(creator_domain_sid, creator_rid) = creator_sid.split()
         self.assertEqual(creator_sid, self.unpriv_user_sid)
         
+        self.assertTrue("objectSid" in res[0])
 	account_sid = ndr_unpack(security.dom_sid, res[0]["objectSID"][0])
 	(account_domain_sid, account_rid) = account_sid.split()
 	self.assertEqual(account_domain_sid, self.domain_sid)
 
+        self.assertTrue("nTSecurityDescriptor" in res[0])
         desc = res[0]["nTSecurityDescriptor"][0]
         desc = ndr_unpack(security.descriptor, desc, allow_remaining=True)
         self.assertTrue(str(desc.owner_sid) == "%s-512" % self.domain_sid)
         self.assertTrue(str(desc.group_sid) == "%s-513" % self.domain_sid)
+
+        if dnshostname:
+            self.assertTrue("dNSHostName" in res[0])
+            self.assertEqual(res[0]["dNSHostName"][0], dnshostname)
+            self.assertTrue("servicePrincipalName" in res[0])
+        else:
+            self.assertFalse("dNSHostName" in res[0])
+            self.assertFalse("servicePrincipalName" in res[0])
             
-        # TODO Assert created SD
         sddl = desc.as_sddl(self.domain_sid)
 	self.assertEqual('O:DAG:DUD:(OA;;WP;5f202010-79a5-11d0-9020-00c04fc2d4cf;bf967a86-0de6-11d0-a285-00aa003049e2;' + str(self.unpriv_user_sid) + ')(OA;;WP;bf967950-0de6-11d0-a285-00aa003049e2;bf967a86-0de6-11d0-a285-00aa003049e2;' + str(self.unpriv_user_sid) + ')(OA;;WP;bf967953-0de6-11d0-a285-00aa003049e2;bf967a86-0de6-11d0-a285-00aa003049e2;' + str(self.unpriv_user_sid) + ')(OA;;WP;3e0abfd0-126a-11d0-a060-00aa006c33ed;bf967a86-0de6-11d0-a285-00aa003049e2;' + str(self.unpriv_user_sid) + ')(OA;;SW;72e39547-7b18-11d1-adef-00c04fd8d5cd;;' + str(self.unpriv_user_sid) + ')(OA;;SW;f3a64788-5306-11d1-a9c5-0000f80367c1;;' + str(self.unpriv_user_sid) + ')(OA;;WP;4c164200-20c0-11d0-a768-00aa006e0529;;' + str(self.unpriv_user_sid) + ')(OA;;RPWP;bf967a7f-0de6-11d0-a285-00aa003049e2;;CA)(OA;;CCDC;bf967aa8-0de6-11d0-a285-00aa003049e2;;PO)(OA;;RP;46a9b11d-60ae-405a-b7e8-ff8a58d456d2;;S-1-5-32-560)(OA;;CR;ab721a53-1e2f-11d0-9819-00aa0040529b;;WD)(OA;;SW;72e39547-7b18-11d1-adef-00c04fd8d5cd;;PS)(OA;;SW;f3a64788-5306-11d1-a9c5-0000f80367c1;;PS)(OA;;RPWP;77b5b886-944a-11d1-aebd-0000f80367c1;;PS)(A;;RPCRLCLORC;;;' + str(self.unpriv_user_sid) + ')(A;;RPWPCRCCDCLCLORCWOWDSDDTSW;;;DA)(A;;RPWPCRCCDCLCLORCWOWDSDDTSW;;;AO)(A;;CCDC;;;PS)(A;;RPLCLORC;;;AU)(A;;RPWPCRCCDCLCLORCWOWDSDDTSW;;;SY)(OA;CIIOID;RP;4c164200-20c0-11d0-a768-00aa006e0529;4828cc14-1437-45bc-9b07-ad6f015e5f28;RU)(OA;CIIOID;RP;4c164200-20c0-11d0-a768-00aa006e0529;bf967aba-0de6-11d0-a285-00aa003049e2;RU)(OA;CIIOID;RP;5f202010-79a5-11d0-9020-00c04fc2d4cf;4828cc14-1437-45bc-9b07-ad6f015e5f28;RU)(OA;CIIOID;RP;5f202010-79a5-11d0-9020-00c04fc2d4cf;bf967aba-0de6-11d0-a285-00aa003049e2;RU)(OA;CIIOID;RP;bc0ac240-79a9-11d0-9020-00c04fc2d4cf;4828cc14-1437-45bc-9b07-ad6f015e5f28;RU)(OA;CIIOID;RP;bc0ac240-79a9-11d0-9020-00c04fc2d4cf;bf967aba-0de6-11d0-a285-00aa003049e2;RU)(OA;CIIOID;RP;59ba2f42-79a2-11d0-9020-00c04fc2d3cf;4828cc14-1437-45bc-9b07-ad6f015e5f28;RU)(OA;CIIOID;RP;59ba2f42-79a2-11d0-9020-00c04fc2d3cf;bf967aba-0de6-11d0-a285-00aa003049e2;RU)(OA;CIIOID;RP;037088f8-0ae1-11d2-b422-00a0c968f939;4828cc14-1437-45bc-9b07-ad6f015e5f28;RU)(OA;CIIOID;RP;037088f8-0ae1-11d2-b422-00a0c968f939;bf967aba-0de6-11d0-a285-00aa003049e2;RU)(OA;CIID;RP;b7c69e6d-2cc7-11d2-854e-00a0c983f608;bf967a86-0de6-11d0-a285-00aa003049e2;ED)(OA;CIIOID;RP;b7c69e6d-2cc7-11d2-854e-00a0c983f608;bf967a9c-0de6-11d0-a285-00aa003049e2;ED)(OA;CIIOID;RP;b7c69e6d-2cc7-11d2-854e-00a0c983f608;bf967aba-0de6-11d0-a285-00aa003049e2;ED)(OA;CIID;WP;ea1b7b93-5e48-46d5-bc6c-4df4fda78a35;bf967a86-0de6-11d0-a285-00aa003049e2;PS)(OA;CIIOID;RPLCLORC;;4828cc14-1437-45bc-9b07-ad6f015e5f28;RU)(OA;CIIOID;RPLCLORC;;bf967a9c-0de6-11d0-a285-00aa003049e2;RU)(OA;CIIOID;RPLCLORC;;bf967aba-0de6-11d0-a285-00aa003049e2;RU)(OA;OICIID;RPWP;3f78c3e5-f79a-46bd-a0b8-9d18116ddc79;;PS)(OA;CIID;RPWPCR;91e647de-d96f-4b70-9557-d63ff4f3ccd8;;PS)(A;CIID;RPWPCRCCDCLCLORCWOWDSDDTSW;;;EA)(A;CIID;LC;;;RU)(A;CIID;RPWPCRCCLCLORCWOWDSDSW;;;BA)S:(OU;CIIOIDSA;WP;f30e3bbe-9ff0-11d1-b603-0000f80367c1;bf967aa5-0de6-11d0-a285-00aa003049e2;WD)(OU;CIIOIDSA;WP;f30e3bbf-9ff0-11d1-b603-0000f80367c1;bf967aa5-0de6-11d0-a285-00aa003049e2;WD)', sddl)
 
@@ -247,7 +260,9 @@ class MachineAccountPrivilegeTests(samba.tests.TestCase):
                     return           
                 else:
                     raise
-            self.check_computer_account(computername=computername)
+            domainname = ldb.Dn(self.samdb, self.samdb.domain_dn()).canonical_str().replace("/", "")
+            dnshostname = "%s.%s" % (computername, domainname)
+            self.check_computer_account(computername=computername, dnshostname=dnshostname)
 
     def test_add_computer_ldap_enabled(self):
         idx = 0
@@ -260,7 +275,9 @@ class MachineAccountPrivilegeTests(samba.tests.TestCase):
                     return
                 else:
                     raise
-                self.check_computer_account(computername=computername)
+            domainname = ldb.Dn(self.samdb, self.samdb.domain_dn()).canonical_str().replace("/", "")
+            dnshostname = "%s.%s" % (computername, domainname)
+            self.check_computer_account(computername=computername, dnshostname=dnshostname)
 
     
 runner = SubunitTestRunner()
