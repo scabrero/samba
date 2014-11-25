@@ -13,6 +13,7 @@ import samba
 import samba.getopt as options
 import samba.tests
 import ldb
+import base64
 
 from subunit.run import SubunitTestRunner
 from samba.auth import system_session
@@ -23,6 +24,10 @@ from samba.ndr import ndr_unpack
 from samba.tests import delete_force
 from samba import gensec, sd_utils
 from samba.credentials import DONT_USE_KERBEROS
+from ldb import SCOPE_BASE, LdbError
+from ldb import Message, MessageElement, Dn
+from ldb import FLAG_MOD_ADD, FLAG_MOD_REPLACE, FLAG_MOD_DELETE
+from Crypto.Hash import MD4
 
 parser = optparse.OptionParser("machine_account_privilege.py [options] <host>")
 sambaopts = options.SambaOptions(parser)
@@ -37,8 +42,8 @@ opts, args = parser.parse_args()
 if len(args) < 1:
     parser.print_usage()
     sys.exit(1)
-
 host = args[0]
+
 if not "://" in host:
     ldaphost = "ldap://%s" % host
 else:
@@ -51,7 +56,6 @@ creds = credopts.get_credentials(lp)
 creds.set_gensec_features(creds.get_gensec_features() | gensec.FEATURE_SEAL)
 
 class MachineAccountPrivilegeTests(samba.tests.TestCase):
-
     def get_creds(self, target_username, target_password):
         creds_tmp = Credentials()
         creds_tmp.set_username(target_username)
@@ -64,17 +68,31 @@ class MachineAccountPrivilegeTests(samba.tests.TestCase):
         creds_tmp.set_kerberos_state(DONT_USE_KERBEROS) # kinit is too expensive to use in a tight loop
         return creds_tmp
 
+    def setMachineQuota(self, quota):
+        m = Message()
+        m.dn = Dn(self.admin_samdb, self.base_dn)
+        m["e1"] = MessageElement(str(quota), FLAG_MOD_REPLACE, "ms-DS-MachineAccountQuota")
+        self.admin_samdb.modify(m)
+        self.quota = quota 
+
     def setUp(self):
         super(MachineAccountPrivilegeTests, self).setUp()
         self.admin_creds = creds
         self.admin_samdb = SamDB(url=ldaphost,
                                  session_info=system_session(), 
                                  credentials=self.admin_creds, lp=lp)
+
         self.unpriv_user = "testuser1"
         self.unpriv_user_pw = "samba123@"
         self.unpriv_creds = self.get_creds(self.unpriv_user, self.unpriv_user_pw)
+
         self.admin_samdb.newuser(self.unpriv_user, self.unpriv_user_pw)
-        self.sd_utils = sd_utils.SDUtils(self.admin_samdb)
+        res = self.admin_samdb.search("CN=%s,CN=Users,%s" % (self.unpriv_user, self.admin_samdb.domain_dn()),
+                                      scope=SCOPE_BASE,
+                                      attrs=["objectSid"])
+        self.assertEqual(len(res), 1)
+            
+        self.unpriv_user_sid = ndr_unpack(security.dom_sid, res[0]["objectSid"][0])
 
         self.samdb = SamDB(url=ldaphost, credentials=self.unpriv_creds, lp=lp)
         self.domain_sid = security.dom_sid(self.samdb.get_domain_sid())
@@ -83,63 +101,158 @@ class MachineAccountPrivilegeTests(samba.tests.TestCase):
         self.samr = samr.samr("ncacn_ip_tcp:%s[sign]" % host, lp, self.unpriv_creds)
         self.samr_handle = self.samr.Connect2(None, security.SEC_FLAG_MAXIMUM_ALLOWED)
         self.samr_domain = self.samr.OpenDomain(self.samr_handle, security.SEC_FLAG_MAXIMUM_ALLOWED, self.domain_sid)
-        
-        self.computername = "testcomputer1"
+
+        self.sd_utils = sd_utils.SDUtils(self.admin_samdb)
+        self.setMachineQuota(3)
+
+        self.computernames = []
+        for i in range(0, self.quota + 1):
+            self.computernames.append("testcomputer-%d" % i)
+
+	res = self.admin_samdb.search("CN=Computers,%s" % (self.base_dn),
+                                      scope=SCOPE_BASE,
+                                      attrs=["nTSecurityDescriptor"])
+        self.assertEqual(len(res), 1)
+        desc = res[0]["nTSecurityDescriptor"][0]
+        self.container_desc = ndr_unpack(security.descriptor, desc, allow_remaining=True)
 
     def tearDown(self):
         super(MachineAccountPrivilegeTests, self).tearDown()
-	delete_force(self.admin_samdb, "CN=%s,CN=Computers,%s" % (self.computername, self.base_dn))
-	delete_force(self.admin_samdb, "CN=%s,CN=Users,%s" % (self.unpriv_user, self.base_dn))
+        for computername in self.computernames:
+            delete_force(self.admin_samdb, "CN=%s,CN=Computers,%s" % (computername, self.base_dn))
+        delete_force(self.admin_samdb, "CN=%s,CN=Users,%s" % (self.unpriv_user, self.base_dn))
+
+    def check_computer_account(self, computername):
+        def arcfour_encrypt(key, data):
+            from Crypto.Cipher import ARC4
+            c = ARC4.new(key)
+            return c.encrypt(data)
+
+        def string_to_array(string):
+            blob = [0] * len(string)
+            for i in range(len(string)):
+                blob[i] = ord(string[i])
+            return blob
+
+        print "Checking %s" % computername
+        res = self.admin_samdb.search("CN=%s,CN=Computers,%s" % (computername, self.base_dn),
+                                      scope=SCOPE_BASE,
+                                      attrs=["nTSecurityDescriptor", "ms-DS-CreatorSID", "objectSID"])
+        self.assertNotEqual(len(res), 0)
+            
+        creator_sid = ndr_unpack(security.dom_sid, res[0]["ms-DS-CreatorSID"][0])
+	(creator_domain_sid, creator_rid) = creator_sid.split()
+        self.assertEqual(creator_sid, self.unpriv_user_sid)
+        
+	account_sid = ndr_unpack(security.dom_sid, res[0]["objectSID"][0])
+	(account_domain_sid, account_rid) = account_sid.split()
+	self.assertEqual(account_domain_sid, self.domain_sid)
+
+        desc = res[0]["nTSecurityDescriptor"][0]
+        desc = ndr_unpack(security.descriptor, desc, allow_remaining=True)
+        self.assertTrue(str(desc.owner_sid) == "%s-512" % self.domain_sid)
+        self.assertTrue(str(desc.group_sid) == "%s-513" % self.domain_sid)
+            
+        # TODO Assert created SD
+        #sddl = desc.as_sddl(self.domain_sid)
+
+        # Assert password set over LDAP
+        newpwd = unicode('"' + 'thatsAcomplPASS2' + '"', 'utf-8').encode('utf-16-le')
+        m = Message()
+        m.dn = Dn(self.samdb, "CN=%s,CN=Computers,%s" % (computername, self.base_dn))
+        m["e1"] = MessageElement(newpwd, FLAG_MOD_REPLACE, "unicodePwd")
+        self.samdb.modify(m)
+
+        # Assert password set over SAM-R
+        newpwd = unicode('"' + 'thatsAcomplPASS3' + '"', 'utf-8').encode('utf-16-le')
+	h = MD4.new()
+        h.update(newpwd)
+        nt_hash = arcfour_encrypt(self.samr.session_key, h.digest())
+
+	samr_user = self.samr.OpenUser(self.samr_domain, security.SEC_FLAG_MAXIMUM_ALLOWED, account_rid)
+        user_info = samr.UserInfo18()
+	user_info.nt_pwd.hash = string_to_array(nt_hash)
+	user_info.nt_pwd_active = True;
+	user_info.lm_pwd_active = False;
+
+        self.samr.SetUserInfo(samr_user, 18, user_info)
+        self.samr.Close(samr_user)
 
     def test_add_computer_samr(self):
-	account = lsa.String()
-	account.string = "%s$" % self.computername
-        acct_flags = samr.ACB_WSTRUST
-        access_mask = 0xe00500b0
-        (user_handle, granted_access, rid) = self.samr.CreateUser2(
-			self.samr_domain, account, acct_flags, access_mask)
-	
-        res = self.admin_samdb.search("CN=Computers,%s" % self.base_dn,
-                                expression="(samAccountName=%s)" % account.string,
-				attrs=["nTSecurityDescriptor"])
-        self.assertNotEqual(len(res), 0)
-        
-	desc = res[0]["nTSecurityDescriptor"][0]
-        desc = ndr_unpack(security.descriptor, desc, allow_remaining=True)
-	self.assertTrue(str(desc.owner_sid) == "%s-512" % self.domain_sid)
-	self.assertTrue(str(desc.group_sid) == "%s-513" % self.domain_sid)
-        sddl = self.sd_utils.get_sd_as_sddl(res[0].dn)
-        self.assertEqual(sddl, "")
+        idx = 0
+        for computername in self.computernames:
+            print "Adding computer account %s" % computername
+            samaccountname = "%s$" % computername
+            account = lsa.String()
+            account.string = samaccountname
+            acct_flags = samr.ACB_WSTRUST
+            access_mask = 0xe00500b0
+         
+            try:
+                (user_handle, granted_access, rid) = self.samr.CreateUser2(
+                            self.samr_domain, account, acct_flags, access_mask)
+                self.check_computer_account(computername)
+                idx += 1
+            except RuntimeError, (enum, estr):
+                if (enum == -1073741790 or enum == -1073741756) and idx == self.quota:
+                    pass
+                else:
+                    raise
 
-    def test_add_computer_ldap(self):
-        dn = "CN=%s,CN=Computers,%s" % (self.computername, self.base_dn)
-        samaccountname = "%s$" % self.computername
+    def add_computer_ldap(self, computername, pwd):
+        dn = "CN=%s,CN=Computers,%s" % (computername, self.base_dn)
+        samaccountname = "%s$" % computername
         domainname = ldb.Dn(self.samdb, self.samdb.domain_dn()).canonical_str().replace("/", "")
-        dnshostname = "%s.%s" % (self.computername, domainname)
-        uac = samba.dsdb.UF_WORKSTATION_TRUST_ACCOUNT + samba.dsdb.UF_ACCOUNTDISABLE
+        dnshostname = "%s.%s" % (computername, domainname)
+
+        uac = samba.dsdb.UF_WORKSTATION_TRUST_ACCOUNT
         msg = ldb.Message.from_dict(self.samdb, {
-            "dn": dn,
-            "objectclass": "computer",
-            "sAMAccountName": samaccountname,
-            "userAccountControl": str(uac),
-            "dNSHostName": dnshostname,
-            "servicePrincipalName": ["HOST/%s" % dnshostname,
-                                     "HOST/%s" % self.computername]})
+                "dn": dn,
+                "objectclass": "computer",
+                "sAMAccountName": samaccountname,
+                "dNSHostName": dnshostname,
+                "servicePrincipalName": ["HOST/%s" % dnshostname,
+                                         "HOST/%s" % computername]})
+        if pwd is None:
+            uac |= samba.dsdb.UF_ACCOUNTDISABLE
+        else:
+            pwd = unicode('"' + pwd + '"', 'utf-8').encode('utf-16-le')
+            msg["unicodePwd"] = pwd
+
+        msg["userAccountControl"] = str(uac)
+
+        print "Adding computer account %s" % computername
         self.samdb.add(msg)
 
-        res = self.admin_samdb.search("CN=Computers,%s" % self.base_dn,
-                                      expression="(samAccountName=%s)" % samaccountname,
-                                      attrs=["nTSecurityDescriptor"])
-        self.assertNotEqual(len(res), 0)
-        
-	desc = res[0]["nTSecurityDescriptor"][0]
-        desc = ndr_unpack(security.descriptor, desc, allow_remaining=True)
-	self.assertTrue(str(desc.owner_sid) == "%s-512" % self.domain_sid)
-	self.assertTrue(str(desc.group_sid) == "%s-513" % self.domain_sid)
+    def test_add_computer_ldap_disabled(self):
+        idx = 0
+        for computername in self.computernames:
+            try:
+                self.add_computer_ldap(computername, None)
+                self.check_computer_account(computername)
+                idx += 1
+            except LdbError, (enum, estr):
+                if enum == ldb.ERR_UNWILLING_TO_PERFORM and idx == self.quota: 
+                    pass
+                else:
+                    raise
 
+    def test_add_computer_ldap_enabled(self):
+        idx = 0
+        for computername in self.computernames:
+            try:
+                self.add_computer_ldap(computername, "thatsAcomplPASS1")
+                self.check_computer_account(computername)
+                idx += 1
+            except LdbError, (enum, estr):
+                if enum == ldb.ERR_UNWILLING_TO_PERFORM and idx == self.quota: 
+                    pass
+                else:
+                    raise
+
+    
 runner = SubunitTestRunner()
 rc = 0
 if not runner.run(unittest.makeSuite(MachineAccountPrivilegeTests)).wasSuccessful():
     rc = 1
-
 sys.exit(rc)
