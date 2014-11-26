@@ -274,6 +274,25 @@ class MachineAccountPrivilegeTests(samba.tests.TestCase):
                 return
             self.fail()
 
+    def test_add_rodc_samr(self):
+        computername="testdc"
+        print "Testing adding RODC account %s" % computername
+        samaccountname = "%s$" % computername
+        account = lsa.String()
+        account.string = samaccountname
+        acct_flags = samr.ACB_WSTRUST|samr.ACB_PARTIAL_SECRETS_ACCOUNT
+        access_mask = 0xe00500b0
+
+        try:
+            (user_handle, granted_access, rid) = self.samr.CreateUser2(
+                self.samr_domain, account, acct_flags, access_mask)
+            self.fail()
+        except RuntimeError, (enum, estr):
+            # Windows machines return NT_STATUS_INVALID_PARAMETER
+            if enum == -1073741811:
+                return
+            self.fail()
+
     def test_add_user_samr(self):
         samaccountname="testuser"
         print "Testing adding account %s" % samaccountname
@@ -315,13 +334,14 @@ class MachineAccountPrivilegeTests(samba.tests.TestCase):
             self.check_computer_account(sid=security.dom_sid("%s-%d" % (self.domain_sid, rid)),
                                         computername=computername, over_samr=True)
 
-    def add_computer_ldap(self, computername, pwd, add_uac=True, add_samaccountname=True, add_dns=True, add_spn=True, add_pwd=True):
+    def add_computer_ldap(self, computername, pwd, uac=samba.dsdb.UF_WORKSTATION_TRUST_ACCOUNT,
+                          add_uac=True, add_samaccountname=True, add_dns=True, add_spn=True, add_pwd=True):
         dn = "CN=%s,OU=test_computer_ou1,%s" % (computername, self.base_dn)
         domainname = ldb.Dn(self.samdb, self.samdb.domain_dn()).canonical_str().replace("/", "")
         samaccountname = "%s$" % computername
         dnshostname = "%s.%s" % (computername, domainname)
 
-        uac = samba.dsdb.UF_WORKSTATION_TRUST_ACCOUNT
+        
         msg = ldb.Message.from_dict(self.samdb, {
                 "dn": dn,
                 "objectclass": "computer"})
@@ -377,6 +397,30 @@ class MachineAccountPrivilegeTests(samba.tests.TestCase):
             domainname = ldb.Dn(self.samdb, self.samdb.domain_dn()).canonical_str().replace("/", "")
             dnshostname = "%s.%s" % (computername, domainname)
             self.check_computer_account(computername=computername, dnshostname=dnshostname, password_was_set=True)
+
+    def test_add_computer_ldap_dc(self):
+        idx = 0
+        for computername in self.computernames:
+            try:
+                self.add_computer_ldap(computername, "thatsAcomplPASS1",
+                                       uac=samba.dsdb.UF_SERVER_TRUST_ACCOUNT)
+                idx += 1
+            except LdbError, (enum, estr):
+                self.assertEqual(ldb.ERR_CONSTRAINT_VIOLATION, enum)
+                return
+            self.fail()
+
+    def test_add_computer_ldap_rodc(self):
+        idx = 0
+        for computername in self.computernames:
+            try:
+                self.add_computer_ldap(computername, "thatsAcomplPASS1",
+                                       uac=samba.dsdb.UF_WORKSTATION_TRUST_ACCOUNT|samba.dsdb.UF_PARTIAL_SECRETS_ACCOUNT)
+                idx += 1
+            except LdbError, (enum, estr):
+                self.assertEqual(ldb.ERR_CONSTRAINT_VIOLATION, enum)
+                return
+            self.fail()
 
     def test_attributes(self):
         computername = self.computernames[0]
