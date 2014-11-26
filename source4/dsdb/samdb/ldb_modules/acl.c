@@ -953,7 +953,7 @@ static int acl_check_machine_quota(struct ldb_module *module,
 	if (res->count >= quota) {
 		DEBUG(0, ("acl: Machine quota exceeded\n"));
 		talloc_free(tmp_ctx);
-		return LDB_ERR_UNWILLING_TO_PERFORM;
+		return ldb_error(ldb, LDB_ERR_UNWILLING_TO_PERFORM, "quota exceeded");
 	}
 
 	talloc_free(tmp_ctx);

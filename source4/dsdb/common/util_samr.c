@@ -219,6 +219,16 @@ NTSTATUS dsdb_add_user(struct ldb_context *ldb,
 		talloc_free(tmp_ctx);
 		return NT_STATUS_USER_EXISTS;
 	case LDB_ERR_UNWILLING_TO_PERFORM:
+		ldb_transaction_cancel(ldb);
+		DEBUG(0,("Failed to create user record %s: %s\n",
+			 ldb_dn_get_linearized(msg->dn),
+			 ldb_errstring(ldb)));
+		talloc_free(tmp_ctx);
+		if (ldb_errstring(ldb) && (strncmp("quota exceeded",
+						  ldb_errstring(ldb), 14) == 0)) {
+			return NT_STATUS_QUOTA_EXCEEDED;
+		}
+		return NT_STATUS_ACCESS_DENIED;
 	case LDB_ERR_INSUFFICIENT_ACCESS_RIGHTS:
 		ldb_transaction_cancel(ldb);
 		DEBUG(0,("Failed to create user record %s: %s\n",
