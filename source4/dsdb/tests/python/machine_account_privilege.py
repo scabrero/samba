@@ -168,7 +168,7 @@ class MachineAccountPrivilegeTests(samba.tests.TestCase):
         delete_force(self.admin_samdb, "OU=test_computer_ou1,%s" % (self.base_dn))
         delete_force(self.admin_samdb, "CN=%s,CN=Users,%s" % (self.unpriv_user, self.base_dn))
 
-    def check_computer_account(self, sid=None, computername=None, dnshostname=None):
+    def check_computer_account(self, sid=None, computername=None, dnshostname=None, password_was_set=False, over_samr=False):
         def arcfour_encrypt(key, data):
             from Crypto.Cipher import ARC4
             c = ARC4.new(key)
@@ -181,7 +181,8 @@ class MachineAccountPrivilegeTests(samba.tests.TestCase):
             return blob
 
         attrs=["nTSecurityDescriptor", "mS-DS-CreatorSID", "objectSID", "dnsHostName",
-               "servicePrincipalName", "objectClass", "objectCategory"]
+               "servicePrincipalName", "objectClass", "objectCategory",
+               "userAccountControl"]
 
         if sid is not None:
             print "Checking %s" % sid
@@ -206,11 +207,20 @@ class MachineAccountPrivilegeTests(samba.tests.TestCase):
         (account_domain_sid, account_rid) = account_sid.split()
         self.assertEqual(self.domain_sid, account_domain_sid)
 
+        self.assertTrue("userAccountControl" in res[0])
+        uac = int(res[0]["userAccountControl"][0])
+        if password_was_set:
+            self.assertEqual(samba.dsdb.UF_WORKSTATION_TRUST_ACCOUNT, uac)
+        elif over_samr:
+            self.assertEqual(samba.dsdb.UF_WORKSTATION_TRUST_ACCOUNT | samba.dsdb.UF_PASSWD_NOTREQD, uac)
+        else:
+            self.assertEqual(samba.dsdb.UF_WORKSTATION_TRUST_ACCOUNT | samba.dsdb.UF_ACCOUNTDISABLE, uac)
+
         self.assertTrue("nTSecurityDescriptor" in res[0])
         desc = res[0]["nTSecurityDescriptor"][0]
         desc = ndr_unpack(security.descriptor, desc, allow_remaining=True)
-        self.assertTrue(str(desc.owner_sid) == "%s-512" % self.domain_sid)
-        self.assertTrue(str(desc.group_sid) == "%s-513" % self.domain_sid)
+        self.assertEqual("%s-512" % self.domain_sid, str(desc.owner_sid))
+        self.assertEqual("%s-513" % self.domain_sid, str(desc.group_sid))
 
         if dnshostname:
             self.assertTrue("dNSHostName" in res[0])
@@ -266,7 +276,7 @@ class MachineAccountPrivilegeTests(samba.tests.TestCase):
                 else:
                     raise
             self.check_computer_account(sid=security.dom_sid("%s-%d" % (self.domain_sid, rid)),
-                                        computername=computername)
+                                        computername=computername, over_samr=True)
 
     def add_computer_ldap(self, computername, pwd, add_uac=True, add_samaccountname=True, add_dns=True, add_spn=True, add_pwd=True):
         dn = "CN=%s,OU=test_computer_ou1,%s" % (computername, self.base_dn)
@@ -329,7 +339,7 @@ class MachineAccountPrivilegeTests(samba.tests.TestCase):
                     raise
             domainname = ldb.Dn(self.samdb, self.samdb.domain_dn()).canonical_str().replace("/", "")
             dnshostname = "%s.%s" % (computername, domainname)
-            self.check_computer_account(computername=computername, dnshostname=dnshostname)
+            self.check_computer_account(computername=computername, dnshostname=dnshostname, password_was_set=True)
 
     def test_attributes(self):
         computername = self.computernames[0]
@@ -337,34 +347,35 @@ class MachineAccountPrivilegeTests(samba.tests.TestCase):
             self.add_computer_ldap(computername, None, add_samaccountname=False)
             self.fail()
         except LdbError, (enum, estr):
-            if enum != 53:
+            # Windows 2012R2 returns CONSTRAINT_VIOLATION, 2008R2 returns UNWILLING_TO_PERFORM
+            if enum != ldb.ERR_CONSTRAINT_VIOLATION and enum != ldb.ERR_UNWILLING_TO_PERFORM:
                 raise
 
         try:
             self.add_computer_ldap(computername, None, add_spn=False)
             self.fail()
         except LdbError, (enum, estr):
-            if enum != 53:
+            if enum != ldb.ERR_UNWILLING_TO_PERFORM:
                 raise
         try:
             self.add_computer_ldap(computername, None, add_dns=False)
             self.fail()
         except LdbError, (enum, estr):
-            if enum != 53:
+            if enum != ldb.ERR_UNWILLING_TO_PERFORM:
                 raise
 
         try:
             self.add_computer_ldap(computername, None, add_uac=False)
             self.fail()
         except LdbError, (enum, estr):
-            if enum != 53:
+            if enum != ldb.ERR_UNWILLING_TO_PERFORM:
                 raise
 
         try:
             self.add_computer_ldap(computername, "thatsAcomplPASS1", add_pwd=False)
             self.fail()
         except LdbError, (enum, estr):
-            if enum != 53:
+            if enum != ldb.ERR_UNWILLING_TO_PERFORM:
                 raise
 
 runner = SubunitTestRunner()
