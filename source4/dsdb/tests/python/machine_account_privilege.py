@@ -255,6 +255,43 @@ class MachineAccountPrivilegeTests(samba.tests.TestCase):
         self.samr.SetUserInfo(samr_user, 18, user_info)
         self.samr.Close(samr_user)
 
+    def test_add_dc_samr(self):
+        computername="testdc"
+        print "Testing adding DC account %s" % computername
+        samaccountname = "%s$" % computername
+        account = lsa.String()
+        account.string = samaccountname
+        acct_flags = samr.ACB_SVRTRUST
+        access_mask = 0xe00500b0
+
+        try:
+            (user_handle, granted_access, rid) = self.samr.CreateUser2(
+                self.samr_domain, account, acct_flags, access_mask)
+            self.fail()
+        except RuntimeError, (enum, estr):
+            # Windows machines return NT_STATUS_ACCESS_DENIED
+            if enum == -1073741790:
+                return
+            self.fail()
+
+    def test_add_user_samr(self):
+        samaccountname="testuser"
+        print "Testing adding account %s" % samaccountname
+        account = lsa.String()
+        account.string = samaccountname
+        acct_flags = samr.ACB_NORMAL
+        access_mask = 0xe00500b0
+
+        try:
+            (user_handle, granted_access, rid) = self.samr.CreateUser2(
+                self.samr_domain, account, acct_flags, access_mask)
+            self.fail()
+        except RuntimeError, (enum, estr):
+            # Windows machines return NT_STATUS_ACCESS_DENIED
+            if enum == -1073741790:
+                return
+            self.fail()
+
     def test_add_computer_samr(self):
         idx = 0
         for computername in self.computernames:
