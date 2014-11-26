@@ -27,7 +27,7 @@ from samba.ndr import ndr_unpack
 from samba.tests import delete_force
 from samba import gensec, sd_utils
 from samba.credentials import DONT_USE_KERBEROS
-from ldb import SCOPE_BASE, LdbError
+from ldb import SCOPE_SUBTREE, SCOPE_BASE, LdbError
 from ldb import Message, MessageElement, Dn
 from ldb import FLAG_MOD_ADD, FLAG_MOD_REPLACE, FLAG_MOD_DELETE
 from Crypto.Hash import MD4
@@ -194,8 +194,9 @@ class MachineAccountPrivilegeTests(samba.tests.TestCase):
                                           attrs=attrs)
         else:
             print "Checking %s" % computername
-            res = self.admin_samdb.search("CN=%s,OU=test_computer_ou1,%s" % (computername, self.base_dn),
-                                          scope=SCOPE_BASE,
+            res = self.admin_samdb.search("%s" % self.base_dn,
+                                          expression="(&(objectClass=computer)(samAccountName=%s$))" % computername,
+                                          scope=SCOPE_SUBTREE,
                                           attrs=attrs)
 
         self.assertNotEqual(len(res), 0)
@@ -229,7 +230,7 @@ class MachineAccountPrivilegeTests(samba.tests.TestCase):
         # Assert password set over LDAP
         newpwd = unicode('"' + 'thatsAcomplPASS2' + '"', 'utf-8').encode('utf-16-le')
         m = Message()
-        m.dn = Dn(self.samdb, "CN=%s,CN=Computers,%s" % (computername, self.base_dn))
+        m.dn = res[0].dn
         m["e1"] = MessageElement(newpwd, FLAG_MOD_REPLACE, "unicodePwd")
         self.samdb.modify(m)
 
