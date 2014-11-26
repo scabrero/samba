@@ -272,27 +272,35 @@ class MachineAccountPrivilegeTests(samba.tests.TestCase):
             self.check_computer_account(sid=security.dom_sid("%s-%d" % (self.domain_sid, rid)),
                                         computername=computername)
 
-    def add_computer_ldap(self, computername, pwd):
+    def add_computer_ldap(self, computername, pwd, add_uac=True, add_samaccountname=True, add_dns=True, add_spn=True, add_pwd=True):
         dn = "CN=%s,OU=test_computer_ou1,%s" % (computername, self.base_dn)
-        samaccountname = "%s$" % computername
         domainname = ldb.Dn(self.samdb, self.samdb.domain_dn()).canonical_str().replace("/", "")
+        samaccountname = "%s$" % computername
         dnshostname = "%s.%s" % (computername, domainname)
 
         uac = samba.dsdb.UF_WORKSTATION_TRUST_ACCOUNT
         msg = ldb.Message.from_dict(self.samdb, {
                 "dn": dn,
-                "objectclass": "computer",
-                "sAMAccountName": samaccountname,
-                "dNSHostName": dnshostname,
-                "servicePrincipalName": ["HOST/%s" % dnshostname,
-                                         "HOST/%s" % computername]})
+                "objectclass": "computer"})
+
+        if add_dns:
+            msg["dNSHostName"] = dnshostname
+
+        if add_spn:
+            msg["servicePrincipalName"] = ["HOST/%s" % dnshostname,
+                                           "HOST/%s" % computername]
+        if add_samaccountname:
+            msg["sAMAccountName"] = samaccountname
+
         if pwd is None:
             uac |= samba.dsdb.UF_ACCOUNTDISABLE
         else:
-            pwd = unicode('"' + pwd + '"', 'utf-8').encode('utf-16-le')
-            msg["unicodePwd"] = pwd
+            if add_pwd:
+                pwd = unicode('"' + pwd + '"', 'utf-8').encode('utf-16-le')
+                msg["unicodePwd"] = pwd
 
-        msg["userAccountControl"] = str(uac)
+        if add_uac:
+            msg["userAccountControl"] = str(uac)
 
         print "Adding computer account %s" % computername
         self.samdb.add(msg)
@@ -327,6 +335,41 @@ class MachineAccountPrivilegeTests(samba.tests.TestCase):
             dnshostname = "%s.%s" % (computername, domainname)
             self.check_computer_account(computername=computername, dnshostname=dnshostname)
 
+    def test_attributes(self):
+        computername = self.computernames[0]
+        try:
+            self.add_computer_ldap(computername, None, add_samaccountname=False)
+            self.fail()
+        except LdbError, (enum, estr):
+            if enum != 53:
+                raise
+
+        try:
+            self.add_computer_ldap(computername, None, add_spn=False)
+            self.fail()
+        except LdbError, (enum, estr):
+            if enum != 53:
+                raise
+        try:
+            self.add_computer_ldap(computername, None, add_dns=False)
+            self.fail()
+        except LdbError, (enum, estr):
+            if enum != 53:
+                raise
+
+        try:
+            self.add_computer_ldap(computername, None, add_uac=False)
+            self.fail()
+        except LdbError, (enum, estr):
+            if enum != 53:
+                raise
+
+        try:
+            self.add_computer_ldap(computername, "thatsAcomplPASS1", add_pwd=False)
+            self.fail()
+        except LdbError, (enum, estr):
+            if enum != 53:
+                raise
 
 runner = SubunitTestRunner()
 rc = 0
