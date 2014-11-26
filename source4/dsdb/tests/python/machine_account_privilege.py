@@ -429,6 +429,7 @@ class MachineAccountPrivilegeTests(samba.tests.TestCase):
             self.fail()
         except LdbError, (enum, estr):
             # Windows 2012R2 returns CONSTRAINT_VIOLATION, 2008R2 returns UNWILLING_TO_PERFORM
+            # Almost certainly related to generated samAccountName not matching
             if enum != ldb.ERR_CONSTRAINT_VIOLATION and enum != ldb.ERR_UNWILLING_TO_PERFORM:
                 raise
 
@@ -442,7 +443,8 @@ class MachineAccountPrivilegeTests(samba.tests.TestCase):
             self.add_computer_ldap(computername, None, add_dns=False)
             self.fail()
         except LdbError, (enum, estr):
-            if enum != ldb.ERR_UNWILLING_TO_PERFORM:
+            # Windows 2012R2 returns CONSTRAINT_VIOLATION, 2008R2 returns UNWILLING_TO_PERFORM
+            if enum != ldb.ERR_CONSTRAINT_VIOLATION and enum != ldb.ERR_UNWILLING_TO_PERFORM:
                 raise
 
         try:
