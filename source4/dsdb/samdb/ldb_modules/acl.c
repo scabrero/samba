@@ -1018,17 +1018,17 @@ static int acl_add_privileges(struct ldb_module *module,
 		if (samr_request == NULL) {
 			if (!ldb_msg_find_ldb_val(req->op.add.message, "dNSHostName")) {
 				DEBUG(0, ("acl: Missing dNSHostName attribute in add computer request using elevated seMachineAccount privilege\n"));
-				return LDB_ERR_OPERATIONS_ERROR;
+				return LDB_ERR_UNWILLING_TO_PERFORM;
 			}
 			if (!ldb_msg_find_ldb_val(req->op.add.message, "servicePrincipalName")) {
 				DEBUG(0, ("acl: Missing servicePrincipalName attribute in add computer request using elevated seMachineAccount privilege\n"));
-				return LDB_ERR_OPERATIONS_ERROR;
+				return LDB_ERR_UNWILLING_TO_PERFORM;
 			}
 		}
 
 		if (!ldb_msg_find_ldb_val(req->op.add.message, "userAccountControl")) {
 			DEBUG(0, ("acl: Missing userAccountControl attribute in add computer request using elevated seMachineAccount privilege\n"));
-			return LDB_ERR_OPERATIONS_ERROR;
+			return LDB_ERR_UNWILLING_TO_PERFORM;
 		} else {
 			uac = ldb_msg_find_attr_as_uint(req->op.add.message, "userAccountControl", 0);
 			if (!(uac & UF_WORKSTATION_TRUST_ACCOUNT)) {
@@ -1042,7 +1042,7 @@ static int acl_add_privileges(struct ldb_module *module,
 		}
 		if (!ldb_msg_find_ldb_val(req->op.add.message, "sAMAccountName")) {
 			DEBUG(0, ("acl: Missing sAMAccountName attribute in add computer request using elevated seMachineAccount privilege\n"));
-			return LDB_ERR_OPERATIONS_ERROR;
+			return LDB_ERR_UNWILLING_TO_PERFORM;
 		}
 		if (!(uac & UF_ACCOUNTDISABLE)) {
 			if (!ldb_msg_find_ldb_val(req->op.add.message, "unicodePwd")) {
