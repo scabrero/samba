@@ -93,7 +93,7 @@ class MachineAccountPrivilegeTests(samba.tests.TestCase):
         res = self.admin_samdb.search("CN=%s,CN=Users,%s" % (self.unpriv_user, self.admin_samdb.domain_dn()),
                                       scope=SCOPE_BASE,
                                       attrs=["objectSid"])
-        self.assertEqual(len(res), 1)
+        self.assertEqual(1, len(res))
 
         self.unpriv_user_sid = ndr_unpack(security.dom_sid, res[0]["objectSid"][0])
         self.unpriv_user_dn = res[0].dn
@@ -193,12 +193,12 @@ class MachineAccountPrivilegeTests(samba.tests.TestCase):
         self.assertTrue("mS-DS-CreatorSID" in res[0])
         creator_sid = ndr_unpack(security.dom_sid, res[0]["ms-DS-CreatorSID"][0])
         (creator_domain_sid, creator_rid) = creator_sid.split()
-        self.assertEqual(creator_sid, self.unpriv_user_sid)
+        self.assertEqual(self.unpriv_user_sid, creator_sid)
 
         self.assertTrue("objectSid" in res[0])
         account_sid = ndr_unpack(security.dom_sid, res[0]["objectSID"][0])
         (account_domain_sid, account_rid) = account_sid.split()
-        self.assertEqual(account_domain_sid, self.domain_sid)
+        self.assertEqual(self.domain_sid, account_domain_sid)
 
         self.assertTrue("nTSecurityDescriptor" in res[0])
         desc = res[0]["nTSecurityDescriptor"][0]
@@ -208,14 +208,14 @@ class MachineAccountPrivilegeTests(samba.tests.TestCase):
 
         if dnshostname:
             self.assertTrue("dNSHostName" in res[0])
-            self.assertEqual(res[0]["dNSHostName"][0], dnshostname)
+            self.assertEqual(dnshostname, res[0]["dNSHostName"][0])
             self.assertTrue("servicePrincipalName" in res[0])
         else:
             self.assertFalse("dNSHostName" in res[0])
             self.assertFalse("servicePrincipalName" in res[0])
 
         sddl = desc.as_sddl(self.domain_sid)
-        self.assertEqual(sddl, self.sddl_reference)
+        self.assertEqual(self.sddl_reference, sddl)
 
         # Assert password set over LDAP
         newpwd = unicode('"' + 'thatsAcomplPASS2' + '"', 'utf-8').encode('utf-16-le')
