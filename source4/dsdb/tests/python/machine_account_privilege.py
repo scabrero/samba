@@ -150,12 +150,8 @@ class MachineAccountPrivilegeTests(samba.tests.TestCase):
         self.sd_reference.group_sid = security.dom_sid("%s-513" % self.domain_sid)
         self.sd_reference.type = self.sd_reference.type & ~(security.SEC_DESC_DACL_AUTO_INHERITED + security.SEC_DESC_SACL_AUTO_INHERITED)
 
-        mask = security.SEC_ADS_READ_PROP | security.SEC_ADS_CONTROL_ACCESS | \
-               security.SEC_ADS_LIST | security.SEC_ADS_LIST_OBJECT | \
-               security.SEC_STD_READ_CONTROL | security.SEC_STD_DELETE | \
-               security.SEC_ADS_DELETE_TREE
         for ace in self.sd_reference.dacl.aces:
-            if ace.type == security.SEC_ACE_TYPE_ACCESS_ALLOWED and ace.access_mask == mask and ace.trustee == user_sid:
+            if ace.type == security.SEC_ACE_TYPE_ACCESS_ALLOWED and ace.trustee == user_sid:
                 ace.access_mask = ace.access_mask & ~(security.SEC_STD_DELETE | security.SEC_ADS_DELETE_TREE)
         self.sddl_reference  = self.sd_reference.as_sddl(self.domain_sid)
 
