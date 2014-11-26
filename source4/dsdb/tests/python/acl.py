@@ -329,7 +329,7 @@ class AclAddTests(AclTests):
 
     def test_add_u5(self):
         """Testing OU with the rights of regular user granted the right 'Create Computer child objects' 
-        Part of the purpose of this test is to prove that creating computer accounts over LDAP is permitted as an unprivileged user, provided they have SeMachineAccount privs
+        Part of the purpose of this test is to prove that creating computer accounts over LDAP is permitted as an unprivileged user, provided they have SeMachineAccountPrivilege privs
         """
         self.assert_top_ou_deleted()
 
