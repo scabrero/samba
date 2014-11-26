@@ -97,6 +97,23 @@ class MachineAccountPrivilegeTests(samba.tests.TestCase):
 
         self.unpriv_user_sid = ndr_unpack(security.dom_sid, res[0]["objectSid"][0])
 
+        lsaconn = lsa.lsarpc("ncacn_np:%s[sign]" % (host),
+                             lp, creds)
+        
+        objectAttr = lsa.ObjectAttribute()
+        objectAttr.sec_qos = lsa.QosInfo()
+        
+        pol_handle = lsaconn.OpenPolicy2(''.decode('utf-8'),
+                                         objectAttr, security.SEC_FLAG_MAXIMUM_ALLOWED)
+
+        rights = lsa.RightSet()
+        rights.count = 1
+        right_name = lsa.StringLarge()
+        right_name.string = "SeMachineAccountPrivilege"
+        rights.names = [right_name]
+        lsaconn.AddAccountRights(pol_handle, self.unpriv_user_sid,
+                             rights)
+        
         self.samdb = SamDB(url=ldaphost, credentials=self.unpriv_creds, lp=lp)
         self.domain_sid = security.dom_sid(self.samdb.get_domain_sid())
         self.base_dn = self.samdb.domain_dn()
@@ -152,7 +169,6 @@ class MachineAccountPrivilegeTests(samba.tests.TestCase):
                                           attrs=attrs)
 
         self.assertNotEqual(len(res), 0)
-        print res[0]
         self.assertTrue("mS-DS-CreatorSID" in res[0])
         creator_sid = ndr_unpack(security.dom_sid, res[0]["ms-DS-CreatorSID"][0])
         (creator_domain_sid, creator_rid) = creator_sid.split()

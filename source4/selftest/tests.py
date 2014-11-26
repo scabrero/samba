@@ -477,6 +477,7 @@ for env in ["dc", "fl2000dc", "fl2003dc", "fl2008r2dc"]:
     plantestsuite("samba4.ldap.possibleInferiors.python", env, [python, os.path.join(samba4srcdir, "dsdb/samdb/ldb_modules/tests/possibleinferiors.py"), "ldap://$SERVER", '-U"$USERNAME%$PASSWORD"', "-W$DOMAIN"], subunit_version=1)
     plantestsuite_loadlist("samba4.ldap.secdesc.python", env, [python, os.path.join(samba4srcdir, "dsdb/tests/python/sec_descriptor.py"), '$SERVER', '-U"$USERNAME%$PASSWORD"', '--workgroup=$DOMAIN', '$LOADLIST', '$LISTOPT'], subunit_version=2)
     plantestsuite_loadlist("samba4.ldap.acl.python", env, [python, os.path.join(samba4srcdir, "dsdb/tests/python/acl.py"), '$SERVER', '-U"$USERNAME%$PASSWORD"', '--workgroup=$DOMAIN', '$LOADLIST', '$LISTOPT'], subunit_version=2)
+    plantestsuite_loadlist("samba4.ldap.machine_account_privilege.python", env, [python, os.path.join(samba4srcdir, "dsdb/tests/python/machine_account_privilege.py"), '$SERVER', '-U"$USERNAME%$PASSWORD"', '--workgroup=$DOMAIN', '$LOADLIST', '$LISTOPT'], subunit_version=2)
     if env != "fl2000dc":
         # This test makes excessive use of the "userPassword" attribute which
         # isn't available on DCs with Windows 2000 domain function level -
