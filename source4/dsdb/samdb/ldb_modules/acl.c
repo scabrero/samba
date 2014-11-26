@@ -1103,24 +1103,14 @@ static int acl_add_privileges(struct ldb_module *module,
 		sd->owner_sid = dom_sid_add_rid(sd, domain_sid, DOMAIN_RID_ADMINS);
 		sd->type &= ~(SEC_DESC_DACL_AUTO_INHERITED | SEC_DESC_SACL_AUTO_INHERITED);
 
-		/* Remove SEC_STD_DELETE and SEC_ADS_DELETE_TREE from ACE of the creator user */
+		/* Remove SEC_STD_DELETE and SEC_ADS_DELETE_TREE from any ACE of the creator user */
 		if (sd->dacl != NULL) {
-			uint32_t reference_mask;
 			int i;
-
-			reference_mask = SEC_ADS_READ_PROP |
-					 SEC_ADS_CONTROL_ACCESS |
-					 SEC_ADS_LIST |
-					 SEC_ADS_LIST_OBJECT |
-					 SEC_STD_READ_CONTROL |
-					 SEC_STD_DELETE |
-					 SEC_ADS_DELETE_TREE;
 
 			for (i = 0; i < sd->dacl->num_aces; i++) {
 				struct security_ace *ace;
 				ace = &sd->dacl->aces[i];
 				if (ace->type == SEC_ACE_TYPE_ACCESS_ALLOWED &&
-				    ace->access_mask == reference_mask &&
 				    dom_sid_equal(&ace->trustee, creator_sid)) {
 					ace->access_mask &= ~(SEC_STD_DELETE | SEC_ADS_DELETE_TREE);
 				}
