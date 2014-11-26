@@ -22,7 +22,8 @@ from ldb import ERR_CONSTRAINT_VIOLATION
 from ldb import ERR_OPERATIONS_ERROR
 from ldb import Message, MessageElement, Dn
 from ldb import FLAG_MOD_REPLACE, FLAG_MOD_ADD
-from samba.dcerpc import security, drsuapi, misc
+from samba.dcerpc import security, drsuapi, misc, lsa
+from samba.ndr import ndr_unpack
 
 from samba.auth import system_session
 from samba import gensec, sd_utils
@@ -184,9 +185,34 @@ class AclAddTests(AclTests):
         self.ldb_admin.add_remove_group_members("Domain Admins", [self.usr_admin_not_owner],
                        add_members_operation=True)
 
+        res = self.ldb_admin.search("CN=%s,CN=Users,%s" % (self.regular_user, self.ldb_admin.domain_dn()),
+                                      scope=SCOPE_BASE,
+                                      attrs=["objectSid"])
+        self.assertEqual(len(res), 1)
+
+        self.regular_user_sid = ndr_unpack(security.dom_sid, res[0]["objectSid"][0])
+        lsaconn = lsa.lsarpc("ncacn_np:%s[sign]" % (host),
+                             lp, creds)
+        
+        objectAttr = lsa.ObjectAttribute()
+        objectAttr.sec_qos = lsa.QosInfo()
+        
+        pol_handle = lsaconn.OpenPolicy2(''.decode('utf-8'),
+                                         objectAttr, security.SEC_FLAG_MAXIMUM_ALLOWED)
+
+        rights = lsa.RightSet()
+        rights.count = 1
+        right_name = lsa.StringLarge()
+        right_name.string = "SeMachineAccountPrivilege"
+        rights.names = [right_name]
+        lsaconn.AddAccountRights(pol_handle, self.regular_user_sid,
+                             rights)
+        
         self.ldb_owner = self.get_ldb_connection(self.usr_admin_owner, self.user_pass)
         self.ldb_notowner = self.get_ldb_connection(self.usr_admin_not_owner, self.user_pass)
         self.ldb_user = self.get_ldb_connection(self.regular_user, self.user_pass)
+
+
 
     def tearDown(self):
         super(AclAddTests, self).tearDown()
@@ -303,9 +329,10 @@ class AclAddTests(AclTests):
 
     def test_add_u5(self):
         """Testing OU with the rights of regular user granted the right 'Create Computer child objects' 
-        Part of the purpose of this test is to prove that creating computer accounts over LDAP is not permitted as an unprivileged user.
+        Part of the purpose of this test is to prove that creating computer accounts over LDAP is permitted as an unprivileged user, provided they have SeMachineAccount privs
         """
         self.assert_top_ou_deleted()
+
         # Change descriptor for top level OU
         self.ldb_owner.create_ou("OU=test_add_ou1," + self.base_dn)
         user_sid = self.sd_utils.get_object_sid(self.get_user_dn(self.regular_user))
@@ -340,6 +367,11 @@ class AclAddTests(AclTests):
         res = self.ldb_admin.search(self.base_dn,
                 expression="(distinguishedName=%s,%s)" %
                 ("CN=test_add_computer2,CN=Computers",
+                    self.base_dn) )
+        self.assertEqual(len(res), 1)
+        res = self.ldb_admin.search(self.base_dn,
+                expression="(distinguishedName=%s,%s)" %
+                ("CN=test_add_computer3,CN=Computers",
                     self.base_dn) )
         self.assertEqual(len(res), 1)
 
