@@ -335,16 +335,18 @@ class MachineAccountPrivilegeTests(samba.tests.TestCase):
                                         computername=computername, over_samr=True)
 
     def add_computer_ldap(self, computername, pwd, uac=samba.dsdb.UF_WORKSTATION_TRUST_ACCOUNT,
-                          add_uac=True, add_samaccountname=True, add_dns=True, add_spn=True, add_pwd=True):
+                          add_uac=True, add_samaccountname=True, add_dns=True, add_spn=True, add_pwd=True, others=None):
         dn = "CN=%s,OU=test_computer_ou1,%s" % (computername, self.base_dn)
         domainname = ldb.Dn(self.samdb, self.samdb.domain_dn()).canonical_str().replace("/", "")
         samaccountname = "%s$" % computername
         dnshostname = "%s.%s" % (computername, domainname)
+        msg_dict = {
+            "dn": dn,
+            "objectclass": "computer"}
+        if others is not None:
+            msg_dict = dict(msg_dict.items() + others.items())
 
-        
-        msg = ldb.Message.from_dict(self.samdb, {
-                "dn": dn,
-                "objectclass": "computer"})
+        msg = ldb.Message.from_dict(self.samdb, msg_dict )
 
         if add_dns:
             msg["dNSHostName"] = dnshostname
@@ -399,29 +401,55 @@ class MachineAccountPrivilegeTests(samba.tests.TestCase):
             self.check_computer_account(computername=computername, dnshostname=dnshostname, password_was_set=True)
 
     def test_add_computer_ldap_dc(self):
-        idx = 0
-        for computername in self.computernames:
-            try:
-                self.add_computer_ldap(computername, "thatsAcomplPASS1",
-                                       uac=samba.dsdb.UF_SERVER_TRUST_ACCOUNT)
-                idx += 1
-            except LdbError, (enum, estr):
-                self.assertEqual(ldb.ERR_CONSTRAINT_VIOLATION, enum)
-                return
-            self.fail()
-
+        computername="testdc"
+        try:
+            self.add_computer_ldap(computername, "thatsAcomplPASS1",
+                                   uac=samba.dsdb.UF_SERVER_TRUST_ACCOUNT)
+        except LdbError, (enum, estr):
+            self.assertEqual(ldb.ERR_CONSTRAINT_VIOLATION, enum)
+            return
+        self.fail()
+            
     def test_add_computer_ldap_rodc(self):
-        idx = 0
-        for computername in self.computernames:
-            try:
-                self.add_computer_ldap(computername, "thatsAcomplPASS1",
-                                       uac=samba.dsdb.UF_WORKSTATION_TRUST_ACCOUNT|samba.dsdb.UF_PARTIAL_SECRETS_ACCOUNT)
-                idx += 1
-            except LdbError, (enum, estr):
-                self.assertEqual(ldb.ERR_CONSTRAINT_VIOLATION, enum)
-                return
+        computername="testdc"
+        try:
+            self.add_computer_ldap(computername, "thatsAcomplPASS1",
+                                   uac=samba.dsdb.UF_WORKSTATION_TRUST_ACCOUNT|samba.dsdb.UF_PARTIAL_SECRETS_ACCOUNT)
+        except LdbError, (enum, estr):
+            self.assertEqual(ldb.ERR_CONSTRAINT_VIOLATION, enum)
+            return
             self.fail()
 
+    def test_add_computer_primaryGroupID(self):
+        computername="testdc"
+        try:
+            self.add_computer_ldap(computername, "thatsAcomplPASS1",
+                                   others={"primaryGroupID": str(security.DOMAIN_RID_DCS)})
+        except LdbError, (enum, estr):
+            self.assertEqual(ldb.ERR_CONSTRAINT_VIOLATION, enum)
+            return
+        self.fail()
+            
+    def test_add_computer_primaryGroupID2(self):
+        computername="testdc"
+        try:
+            self.add_computer_ldap(computername, "thatsAcomplPASS1",
+                                   others={"primaryGroupID": str(security.DOMAIN_RID_ADMINS)})
+        except LdbError, (enum, estr):
+            self.assertEqual(ldb.ERR_CONSTRAINT_VIOLATION, enum)
+            return
+        self.fail()
+            
+    def test_add_computer_description(self):
+        computername="testdc"
+        try:
+            self.add_computer_ldap(computername, "thatsAcomplPASS1",
+                                   others={"description": "SECURITY BREACH"})
+        except LdbError, (enum, estr):
+            self.assertEqual(ldb.ERR_CONSTRAINT_VIOLATION, enum)
+            return
+        self.fail()
+            
     def test_attributes(self):
         computername = self.computernames[0]
         try:
