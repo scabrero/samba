@@ -993,9 +993,21 @@ static int acl_add_privileges(struct ldb_module *module,
 		struct security_descriptor *sd;
 		struct ldb_request *add_req;
 		struct ldb_message *msg;
+		struct ldb_message_element *el;
 		struct ldb_control *samr_request;
 		unsigned int uac;
 		DATA_BLOB data;
+		int i, j;
+		const char *allowed_attributes[] = {
+			/* Specified */
+			"dNSHostName", "servicePrincipalName",
+			"userAccountControl", "unicodePwd",
+			"objectClass", "sAMAccountNAme",
+
+			/* Generated */
+			"objectCategory", "nTSecurityDescriptor",
+			NULL,
+		};
 
 		/* On non-DC configurations, return access denied */
 		if (lpcfg_server_role(lp_ctx) != ROLE_ACTIVE_DIRECTORY_DC) {
@@ -1007,6 +1019,26 @@ static int acl_add_privileges(struct ldb_module *module,
 			return LDB_ERR_INSUFFICIENT_ACCESS_RIGHTS;
 		}
 
+		/* Assert no extra attributes have been supplied */
+		samr_request = ldb_request_get_control(req, DSDB_CONTROL_SAMR_CREATE_COMPUTER_ACCOUNT);
+		for (i = 0; i < req->op.add.message->num_elements; i++) {
+			bool valid = false;
+			el = &req->op.add.message->elements[i];
+			for (j = 0; allowed_attributes[j] != NULL; j++) {
+				char *attr;
+				attr = allowed_attributes[j];
+				if (strcasecmp(el->name, attr) == 0) {
+					valid = true;
+					continue;
+				}
+			}
+			if (!valid) {
+				/* An invalid attribute has been supplied */
+				DEBUG(0, ("Invalid attribute %s specified in request\n", el->name));
+				return LDB_ERR_CONSTRAINT_VIOLATION;
+			}
+		}
+
 		/*
 		 * Check supplied attribtues
 		 *
@@ -1014,7 +1046,6 @@ static int acl_add_privileges(struct ldb_module *module,
 		 * interface, relax constrains on dNSHostName and
 		 * servicePrincipalName attributes
 		 */
-		samr_request = ldb_request_get_control(req, DSDB_CONTROL_SAMR_CREATE_COMPUTER_ACCOUNT);
 		if (samr_request == NULL) {
 			if (!ldb_msg_find_ldb_val(req->op.add.message, "dNSHostName")) {
 				DEBUG(0, ("acl: Missing dNSHostName attribute in add computer request using elevated seMachineAccount privilege\n"));
