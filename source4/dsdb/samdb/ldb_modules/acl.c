@@ -1069,11 +1069,11 @@ static int acl_add_privileges(struct ldb_module *module,
 			uac = ldb_msg_find_attr_as_uint(req->op.add.message, "userAccountControl", 0);
 			if (!(uac & UF_WORKSTATION_TRUST_ACCOUNT)) {
 				DEBUG(0, ("acl: Invalid userAccountControl attribute value in add computer request using elevated seMachineAccount privilege\n"));
-				return LDB_ERR_UNWILLING_TO_PERFORM;
+				return LDB_ERR_CONSTRAINT_VIOLATION;
 			}
 			if (uac & ~(UF_WORKSTATION_TRUST_ACCOUNT | UF_ACCOUNTDISABLE)) {
 				DEBUG(0, ("acl: Invalid userAccountControl attribute value in add computer request using elevated seMachineAccount privilege\n"));
-				return LDB_ERR_UNWILLING_TO_PERFORM;
+				return LDB_ERR_CONSTRAINT_VIOLATION;
 			}
 		}
 		if (!ldb_msg_find_ldb_val(req->op.add.message, "sAMAccountName")) {
