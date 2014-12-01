@@ -112,9 +112,6 @@ NTSTATUS dsdb_add_user(struct ldb_context *ldb,
 		obj_class = "user";
 		user_account_control = UF_NORMAL_ACCOUNT  | UF_PASSWD_NOTREQD | UF_ACCOUNTDISABLE;
 	} else if (acct_flags == ACB_WSTRUST) {
-		struct loadparm_context *lp_ctx;
-		char *dns_name, *spn1, *spn2;
-
 		if (cn_name[cn_name_len - 1] != '$') {
 			ldb_transaction_cancel(ldb);
 			return NT_STATUS_FOOBAR;
