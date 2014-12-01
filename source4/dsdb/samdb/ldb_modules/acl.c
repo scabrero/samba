@@ -912,12 +912,13 @@ static int acl_check_machine_quota(struct ldb_module *module,
 		NULL,
 	};
 
+	ldb = ldb_module_get_ctx(module);
+
 	tmp_ctx = talloc_new(req);
 	if (tmp_ctx == NULL) {
-		return LDB_ERR_OPERATIONS_ERROR;
+		return ldb_operr(ldb);
 	}
 
-	ldb = ldb_module_get_ctx(module);
 	base_dn = ldb_get_default_basedn(ldb);
 
 	/* Read the quota */
@@ -929,11 +930,11 @@ static int acl_check_machine_quota(struct ldb_module *module,
 				    req);
 	if (ret != LDB_SUCCESS) {
 		talloc_free(tmp_ctx);
-		return LDB_ERR_OPERATIONS_ERROR;
+		return ldb_operr(ldb);
 	}
 	if (res->count != 1) {
 		talloc_free(tmp_ctx);
-		return LDB_ERR_OPERATIONS_ERROR;
+		return ldb_operr(ldb);
 	}
 	msg = res->msgs[0];
 	quota = ldb_msg_find_attr_as_int(msg, "ms-DS-MachineAccountQuota", 10);
@@ -1055,7 +1056,11 @@ static int acl_add_privileges(struct ldb_module *module,
 			}
 			if (!valid) {
 				/* An invalid attribute has been supplied */
-				DEBUG(0, ("Invalid attribute %s specified in request\n", el->name));
+				ldb_asprintf_errstring(ldb,
+						       "%s - %s: Invalid attribute %s specified in request",
+						       ldb_strerror(LDB_ERR_CONSTRAINT_VIOLATION),
+						       __func__,
+						       el->name);
 				return LDB_ERR_CONSTRAINT_VIOLATION;
 			}
 		}
@@ -1069,43 +1074,67 @@ static int acl_add_privileges(struct ldb_module *module,
 		 */
 		if (samr_request == NULL) {
 			if (!ldb_msg_find_ldb_val(req->op.add.message, "dNSHostName")) {
-				DEBUG(0, ("acl: Missing dNSHostName attribute in add computer request using elevated seMachineAccount privilege\n"));
+				ldb_asprintf_errstring(ldb,
+						       "%s - %s: Missing dNSHostName attribute in add computer request using elevated seMachineAccount privilege",
+						       ldb_strerror(LDB_ERR_UNWILLING_TO_PERFORM),
+						       __func__);
 				return LDB_ERR_UNWILLING_TO_PERFORM;
 			}
 			if (!ldb_msg_find_ldb_val(req->op.add.message, "servicePrincipalName")) {
-				DEBUG(0, ("acl: Missing servicePrincipalName attribute in add computer request using elevated seMachineAccount privilege\n"));
+				ldb_asprintf_errstring(ldb,
+						       "%s - %s: Missing servicePrincipalName attribute in add computer request using elevated seMachineAccount privilege",
+						       ldb_strerror(LDB_ERR_UNWILLING_TO_PERFORM),
+						       __func__);
 				return LDB_ERR_UNWILLING_TO_PERFORM;
 			}
 		}
 
 		if (!ldb_msg_find_ldb_val(req->op.add.message, "userAccountControl")) {
-			DEBUG(0, ("acl: Missing userAccountControl attribute in add computer request using elevated seMachineAccount privilege\n"));
+			ldb_asprintf_errstring(ldb,
+					       "%s - %s: Missing userAccountControl attribute in add computer request using elevated seMachineAccount privilege",
+					       ldb_strerror(LDB_ERR_UNWILLING_TO_PERFORM),
+					       __func__);
 			return LDB_ERR_UNWILLING_TO_PERFORM;
 		} else {
 			uac = ldb_msg_find_attr_as_uint(req->op.add.message, "userAccountControl", 0);
 			if (!(uac & UF_WORKSTATION_TRUST_ACCOUNT)) {
-				DEBUG(0, ("acl: Invalid userAccountControl attribute value in add computer request using elevated seMachineAccount privilege\n"));
+				ldb_asprintf_errstring(ldb,
+						       "%s - %s: Invalid userAccountControl attribute value in add computer request using elevated seMachineAccount privilege",
+						       ldb_strerror(LDB_ERR_CONSTRAINT_VIOLATION),
+						       __func__);
 				return LDB_ERR_CONSTRAINT_VIOLATION;
 			}
 			if (samr_request == NULL) {
 				if (uac & ~(UF_WORKSTATION_TRUST_ACCOUNT | UF_ACCOUNTDISABLE)) {
-					DEBUG(0, ("acl: Invalid userAccountControl attribute value in add computer request using elevated seMachineAccount privilege\n"));
+					ldb_asprintf_errstring(ldb,
+							       "%s - %s: Invalid userAccountControl attribute value in add computer request using elevated seMachineAccount privilege",
+							       ldb_strerror(LDB_ERR_CONSTRAINT_VIOLATION),
+							       __func__);
 					return LDB_ERR_CONSTRAINT_VIOLATION;
 				}
 			} else {
 				if (uac & ~(UF_WORKSTATION_TRUST_ACCOUNT | UF_ACCOUNTDISABLE | UF_PASSWD_NOTREQD)) {
-					DEBUG(0, ("acl: Invalid userAccountControl attribute value in add computer request using elevated seMachineAccount privilege\n"));
+					ldb_asprintf_errstring(ldb,
+							       "%s - %s: Invalid userAccountControl attribute value in add computer request using elevated seMachineAccount privilege",
+							       ldb_strerror(LDB_ERR_CONSTRAINT_VIOLATION),
+							       __func__);
 					return LDB_ERR_CONSTRAINT_VIOLATION;
 				}
 			}
 		}
 		if (!ldb_msg_find_ldb_val(req->op.add.message, "sAMAccountName")) {
-			DEBUG(0, ("acl: Missing sAMAccountName attribute in add computer request using elevated seMachineAccount privilege\n"));
+			ldb_asprintf_errstring(ldb,
+					       "%s - %s: Missing sAMAccountName attribute in add computer request using elevated seMachineAccount privilege",
+					       ldb_strerror(LDB_ERR_UNWILLING_TO_PERFORM),
+					       __func__);
 			return LDB_ERR_UNWILLING_TO_PERFORM;
 		}
 		if (!(uac & UF_ACCOUNTDISABLE) && !(uac & UF_PASSWD_NOTREQD)) {
 			if (!ldb_msg_find_ldb_val(req->op.add.message, "unicodePwd")) {
-				DEBUG(0, ("acl: Missing unicodePwd attribute in add computer request using elevated seMachineAccount privilege\n"));
+				ldb_asprintf_errstring(ldb,
+						       "%s - %s: Missing unicodePwd attribute in add computer request using elevated seMachineAccount privilege",
+						       ldb_strerror(LDB_ERR_UNWILLING_TO_PERFORM),
+						       __func__);
 				return LDB_ERR_UNWILLING_TO_PERFORM;
 			}
 		}
