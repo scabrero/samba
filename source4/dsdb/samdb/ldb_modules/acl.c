@@ -43,6 +43,7 @@
 #include "system/kerberos.h"
 #include "auth/kerberos/kerberos.h"
 #include "libcli/ldap/ldap_ndr.h"
+#include "ldb_private.h"
 
 struct extended_access_check_attribute {
 	const char *oa_name;
@@ -1000,17 +1001,14 @@ static int acl_add_privileges(struct ldb_module *module,
 		struct ldb_message *msg;
 		struct ldb_message_element *el;
 		struct ldb_control *samr_request;
+		const struct ldb_request *orig_req;
 		unsigned int uac;
 		DATA_BLOB data;
 		int i, j;
 		const char *allowed_attributes[] = {
-			/* Specified */
 			"dNSHostName", "servicePrincipalName",
 			"userAccountControl", "unicodePwd",
 			"objectClass", "sAMAccountNAme",
-
-			/* Generated */
-			"objectCategory", "nTSecurityDescriptor",
 			NULL,
 		};
 
@@ -1024,13 +1022,27 @@ static int acl_add_privileges(struct ldb_module *module,
 			return LDB_ERR_INSUFFICIENT_ACCESS_RIGHTS;
 		}
 
-		/* Assert no extra attributes have been supplied */
+		/* Retrieve the original add request */
+		orig_req = req;
+		while (orig_req && orig_req->handle && orig_req->handle->parent) {
+			orig_req = orig_req->handle->parent;
+		}
+		if (orig_req == NULL) {
+			return ldb_operr(ldb);
+		}
+
+		/* Check if the request comes over SAM-R or regular LDAP */
 		samr_request = ldb_request_get_control(req, DSDB_CONTROL_SAMR_CREATE_COMPUTER_ACCOUNT);
-		for (i = 0; i < req->op.add.message->num_elements; i++) {
+
+		/*
+		 * Assert no extra attributes have been supplied in the
+		 * original request
+		 */
+		for (i = 0; i < orig_req->op.add.message->num_elements; i++) {
 			bool valid = false;
-			el = &req->op.add.message->elements[i];
+			el = &orig_req->op.add.message->elements[i];
 			for (j = 0; allowed_attributes[j] != NULL; j++) {
-				char *attr;
+				const char *attr;
 				attr = allowed_attributes[j];
 				if (strcasecmp(el->name, attr) == 0) {
 					valid = true;
@@ -1143,8 +1155,6 @@ static int acl_add_privileges(struct ldb_module *module,
 
 		/* Remove SEC_STD_DELETE and SEC_ADS_DELETE_TREE from any ACE of the creator user */
 		if (sd->dacl != NULL) {
-			int i;
-
 			for (i = 0; i < sd->dacl->num_aces; i++) {
 				struct security_ace *ace;
 				ace = &sd->dacl->aces[i];
