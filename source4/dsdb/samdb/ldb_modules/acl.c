@@ -952,9 +952,13 @@ static int acl_check_machine_quota(struct ldb_module *module,
 		return ret;
 	}
 	if (res->count >= quota) {
-		DEBUG(0, ("acl: Machine quota exceeded\n"));
+		ldb_asprintf_errstring(ldb,
+				       "%08X: %s - acl_check_machine_quota: "
+				       "Quota exceeded creating computer account",
+				       W_ERROR_V(WERR_DS_MACHINE_ACCOUNT_QUOTA_EXCEEDED),
+				       ldb_strerror(LDB_ERR_UNWILLING_TO_PERFORM));
 		talloc_free(tmp_ctx);
-		return ldb_error(ldb, LDB_ERR_UNWILLING_TO_PERFORM, "quota exceeded");
+		return LDB_ERR_UNWILLING_TO_PERFORM;
 	}
 
 	talloc_free(tmp_ctx);

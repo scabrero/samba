@@ -326,8 +326,9 @@ class MachineAccountPrivilegeTests(samba.tests.TestCase):
                             self.samr_domain, account, acct_flags, access_mask)
                 idx += 1
             except RuntimeError, (enum, estr):
-                # Windows machines return NT_STATUS_QUOTA_EXCEEDDED
-                if (enum == -1073741756) and idx == self.quota:
+                # Depending on client version windows machines return NT_STATUS_QUOTA_EXCEEDDED
+                # or NT_STATUS_DS_MACHINE_ACCOUNT_QUOTA_EXCEEDED
+                if (enum == -1073741081 or enum == -1073741756) and idx == self.quota:
                     return
                 else:
                     raise
