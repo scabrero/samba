@@ -489,6 +489,25 @@ class MachineAccountPrivilegeTests(samba.tests.TestCase):
             return
         self.fail()
 
+    def test_mod_computer_primaryGroupID(self):
+        computername=self.computernames[0]
+        self.add_computer_ldap(computername, "thatsAcomplPASS1")
+
+        res = self.admin_samdb.search("%s" % self.base_dn,
+                                      expression="(&(objectClass=computer)(samAccountName=%s$))" % computername,
+                                      scope=SCOPE_SUBTREE)
+        self.assertEqual(1, len(res))
+
+        try:
+            m = ldb.Message()
+            m.dn = res[0].dn
+            m["primaryGroupID"] = str(security.DOMAIN_RID_USERS)
+            self.samdb.modify(m)
+        except LdbError, (enum, estr):
+            self.assertEqual(ldb.ERR_INSUFFICIENT_ACCESS_RIGHTS, enum)
+            return
+        self.fail()
+
     def test_attributes(self):
         computername = self.computernames[0]
         try:
