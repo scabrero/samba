@@ -463,6 +463,32 @@ class MachineAccountPrivilegeTests(samba.tests.TestCase):
             return
         self.fail()
 
+    def test_mod_computer_sd(self):
+        computername=self.computernames[0]
+        self.add_computer_ldap(computername, "thatsAcomplPASS1")
+
+        attrs = ['nTSecurityDescriptor']
+        res = self.admin_samdb.search("%s" % self.base_dn,
+                                      expression="(&(objectClass=computer)(samAccountName=%s$))" % computername,
+                                      scope=SCOPE_SUBTREE,
+                                      attrs=attrs)
+        self.assertTrue("nTSecurityDescriptor" in res[0])
+
+        desc = res[0]["nTSecurityDescriptor"][0]
+        desc = ndr_unpack(security.descriptor, desc, allow_remaining=True)
+
+        try:
+            m = ldb.Message()
+            m.dn = res[0].dn
+            m["nTSecurityDescriptor"]= ldb.MessageElement(
+                    (ndr_pack(desc)), ldb.FLAG_MOD_REPLACE,
+                    "nTSecurityDescriptor")
+            self.samdb.modify(m)
+        except LdbError, (enum, estr):
+            self.assertEqual(ldb.ERR_INSUFFICIENT_ACCESS_RIGHTS, enum)
+            return
+        self.fail()
+
     def test_attributes(self):
         computername = self.computernames[0]
         try:
