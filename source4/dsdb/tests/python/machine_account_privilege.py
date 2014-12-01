@@ -23,7 +23,7 @@ from samba.auth import system_session
 from samba.samdb import SamDB
 from samba.dcerpc import samr, security, lsa
 from samba.credentials import Credentials
-from samba.ndr import ndr_unpack
+from samba.ndr import ndr_unpack, ndr_pack
 from samba.tests import delete_force
 from samba import gensec, sd_utils
 from samba.credentials import DONT_USE_KERBEROS
@@ -97,13 +97,13 @@ class MachineAccountPrivilegeTests(samba.tests.TestCase):
 
         self.unpriv_user_sid = ndr_unpack(security.dom_sid, res[0]["objectSid"][0])
         self.unpriv_user_dn = res[0].dn
-        
+
         lsaconn = lsa.lsarpc("ncacn_np:%s[sign]" % (host),
                              lp, creds)
-        
+
         objectAttr = lsa.ObjectAttribute()
         objectAttr.sec_qos = lsa.QosInfo()
-        
+
         pol_handle = lsaconn.OpenPolicy2(''.decode('utf-8'),
                                          objectAttr, security.SEC_FLAG_MAXIMUM_ALLOWED)
 
@@ -114,7 +114,7 @@ class MachineAccountPrivilegeTests(samba.tests.TestCase):
         rights.names = [right_name]
         lsaconn.AddAccountRights(pol_handle, self.unpriv_user_sid,
                              rights)
-        
+
         self.samdb = SamDB(url=ldaphost, credentials=self.unpriv_creds, lp=lp)
         self.domain_sid = security.dom_sid(self.samdb.get_domain_sid())
         self.base_dn = self.samdb.domain_dn()
@@ -133,11 +133,11 @@ class MachineAccountPrivilegeTests(samba.tests.TestCase):
         old_sd = self.sd_utils.read_sd_on_dn("OU=test_computer_ou1," + self.base_dn)
 
         self.sd_utils.dacl_add_ace("OU=test_computer_ou1," + self.base_dn, mod)
-        
+
         self.add_computer_ldap("testcomputer-t", None)
-        
+
         self.sd_utils.modify_sd_on_dn("OU=test_computer_ou1," + self.base_dn, old_sd)
-        
+
         self.computernames = []
         for i in range(0, self.quota + 1):
             self.computernames.append("testcomputer-%d" % i)
@@ -158,7 +158,7 @@ class MachineAccountPrivilegeTests(samba.tests.TestCase):
         # Now reconnect without domain admin rights
         self.samdb = SamDB(url=ldaphost, credentials=self.unpriv_creds, lp=lp)
 
-        
+
     def tearDown(self):
         super(MachineAccountPrivilegeTests, self).tearDown()
         for computername in self.computernames:
@@ -409,7 +409,7 @@ class MachineAccountPrivilegeTests(samba.tests.TestCase):
             self.assertEqual(ldb.ERR_CONSTRAINT_VIOLATION, enum)
             return
         self.fail()
-            
+
     def test_add_computer_ldap_rodc(self):
         computername="testdc"
         try:
@@ -429,7 +429,7 @@ class MachineAccountPrivilegeTests(samba.tests.TestCase):
             self.assertEqual(ldb.ERR_CONSTRAINT_VIOLATION, enum)
             return
         self.fail()
-            
+
     def test_add_computer_primaryGroupID2(self):
         computername="testdc"
         try:
@@ -439,7 +439,7 @@ class MachineAccountPrivilegeTests(samba.tests.TestCase):
             self.assertEqual(ldb.ERR_CONSTRAINT_VIOLATION, enum)
             return
         self.fail()
-            
+
     def test_add_computer_description(self):
         computername="testdc"
         try:
@@ -449,7 +449,20 @@ class MachineAccountPrivilegeTests(samba.tests.TestCase):
             self.assertEqual(ldb.ERR_CONSTRAINT_VIOLATION, enum)
             return
         self.fail()
-            
+
+    def test_add_computer_sd(self):
+        computername="testcomputer"
+        try:
+            sd = ldb.MessageElement((ndr_pack(self.sd_reference)),
+                                              ldb.FLAG_MOD_ADD,
+                                              "nTSecurityDescriptor")
+            self.add_computer_ldap(computername, "thatsAcomplPASS1",
+                                   others={"nTSecurityDescriptor": sd})
+        except LdbError, (enum, estr):
+            self.assertEqual(ldb.ERR_CONSTRAINT_VIOLATION, enum)
+            return
+        self.fail()
+
     def test_attributes(self):
         computername = self.computernames[0]
         try:
