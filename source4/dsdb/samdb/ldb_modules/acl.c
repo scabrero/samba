@@ -836,7 +836,12 @@ static int acl_check_dnshostname(TALLOC_CTX *mem_ctx,
 	 * of the values of msDS-AllowedDNSSuffixes on the domain NC (if any)
 	 * where the object that is being modified is located
 	 */
-	samAccountName = talloc_strdup(tmp_ctx, ldb_msg_find_attr_as_string(acl_res->msgs[0], "samAccountName", NULL));
+	el = ldb_msg_find_element(req->op.mod.message, "samAccountName");
+	if (el) {
+		samAccountName = talloc_strdup(tmp_ctx, ldb_msg_find_attr_as_string(req->op.mod.message, "samAccountName", NULL));
+	} else {
+		samAccountName = talloc_strdup(tmp_ctx, ldb_msg_find_attr_as_string(acl_res->msgs[0], "samAccountName", NULL));
+	}
 	if (samAccountName == NULL) {
 		talloc_free(tmp_ctx);
 		return ldb_error(ldb, LDB_ERR_OPERATIONS_ERROR,
