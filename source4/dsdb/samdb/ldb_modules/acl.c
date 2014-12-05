@@ -690,7 +690,13 @@ static int acl_check_spn(TALLOC_CTX *mem_ctx,
 	}
 
 	userAccountControl = ldb_msg_find_attr_as_uint(acl_res->msgs[0], "userAccountControl", 0);
-	samAccountName = ldb_msg_find_attr_as_string(acl_res->msgs[0], "samAccountName", NULL);
+
+	el = ldb_msg_find_element(req->op.mod.message, "samAccountName");
+	if (el) {
+		samAccountName = ldb_msg_find_attr_as_string(req->op.mod.message, "samAccountName", NULL);
+	} else {
+		samAccountName = ldb_msg_find_attr_as_string(acl_res->msgs[0], "samAccountName", NULL);
+	}
 
 	el = ldb_msg_find_element(req->op.mod.message, "dnsHostName");
 	if (el) {
