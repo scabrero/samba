@@ -509,6 +509,197 @@ class MachineAccountPrivilegeTests(samba.tests.TestCase):
             return
         self.fail()
 
+    def test_mod_samAccountName(self):
+        computername=self.computernames[0]
+        self.add_computer_ldap(computername, "thatsAcomplPASS1")
+
+        res = self.admin_samdb.search("%s" % self.base_dn,
+                                      expression="(&(objectClass=computer)(samAccountName=%s$))" % computername,
+                                      scope=SCOPE_SUBTREE)
+        self.assertEqual(1, len(res))
+
+        domainname = ldb.Dn(self.samdb, self.samdb.domain_dn()).canonical_str().replace("/", "")
+        m = ldb.Message()
+        m.dn = res[0].dn
+        m["e1"] = MessageElement('mod_%s$' % computername, FLAG_MOD_REPLACE, "sAMAccountName")
+        self.samdb.modify(m)
+
+    def test_mod_dnsHostName1(self):
+        computername=self.computernames[0]
+        self.add_computer_ldap(computername, "thatsAcomplPASS1")
+
+        res = self.admin_samdb.search("%s" % self.base_dn,
+                                      expression="(&(objectClass=computer)(samAccountName=%s$))" % computername,
+                                      scope=SCOPE_SUBTREE)
+        self.assertEqual(1, len(res))
+
+        domainname = ldb.Dn(self.samdb, self.samdb.domain_dn()).canonical_str().replace("/", "")
+        m = ldb.Message()
+        m.dn = res[0].dn
+        m["e1"] = MessageElement('mod_%s$' % computername, FLAG_MOD_REPLACE, "sAMAccountName")
+        m["e2"] = MessageElement('mod_%s.%s' % (computername, domainname), FLAG_MOD_REPLACE, "dNSHostName")
+        self.samdb.modify(m)
+
+    def test_mod_dnsHostName2(self):
+        computername=self.computernames[0]
+        self.add_computer_ldap(computername, "thatsAcomplPASS1")
+
+        res = self.admin_samdb.search("%s" % self.base_dn,
+                                      expression="(&(objectClass=computer)(samAccountName=%s$))" % computername,
+                                      scope=SCOPE_SUBTREE)
+        self.assertEqual(1, len(res))
+
+        domainname = ldb.Dn(self.samdb, self.samdb.domain_dn()).canonical_str().replace("/", "")
+        m = ldb.Message()
+        m.dn = res[0].dn
+        m["e1"] = MessageElement('mod_%s$' % computername, FLAG_MOD_REPLACE, "sAMAccountName")
+        m["e2"] = MessageElement('modmod_%s.fakedomain.lan' % (computername), FLAG_MOD_REPLACE, "dNSHostName")
+        self.samdb.modify(m)
+
+    def test_mod_dnsHostName3(self):
+        computername=self.computernames[0]
+        self.add_computer_ldap(computername, "thatsAcomplPASS1")
+
+        res = self.admin_samdb.search("%s" % self.base_dn,
+                                      expression="(&(objectClass=computer)(samAccountName=%s$))" % computername,
+                                      scope=SCOPE_SUBTREE)
+        self.assertEqual(1, len(res))
+
+        domainname = ldb.Dn(self.samdb, self.samdb.domain_dn()).canonical_str().replace("/", "")
+        # Pass against W2K8_R2, fails against W2K12_R2
+        try:
+            m = ldb.Message()
+            m.dn = res[0].dn
+            m["e1"] = MessageElement('mod_%s.%s' % (computername, domainname), FLAG_MOD_REPLACE, "dNSHostName")
+            self.samdb.modify(m)
+        except LdbError, (enum, estr):
+            self.assertEqual(ldb.ERR_CONSTRAINT_VIOLATION, enum)
+            return
+        self.fail()
+
+    def test_mod_dnsHostName4(self):
+        computername=self.computernames[0]
+        self.add_computer_ldap(computername, "thatsAcomplPASS1")
+
+        res = self.admin_samdb.search("%s" % self.base_dn,
+                                      expression="(&(objectClass=computer)(samAccountName=%s$))" % computername,
+                                      scope=SCOPE_SUBTREE)
+        self.assertEqual(1, len(res))
+
+        domainname = ldb.Dn(self.samdb, self.samdb.domain_dn()).canonical_str().replace("/", "")
+        try:
+            m = ldb.Message()
+            m.dn = res[0].dn
+            m["e1"] = MessageElement('%s.fakedomain.lan' % (computername), FLAG_MOD_REPLACE, "dNSHostName")
+            self.samdb.modify(m)
+        except LdbError, (enum, estr):
+            self.assertEqual(ldb.ERR_CONSTRAINT_VIOLATION, enum)
+            return
+        self.fail()
+
+    def test_mod_servicePrincipalName1(self):
+        computername=self.computernames[0]
+        self.add_computer_ldap(computername, "thatsAcomplPASS1")
+
+        res = self.admin_samdb.search("%s" % self.base_dn,
+                                      expression="(&(objectClass=computer)(samAccountName=%s$))" % computername,
+                                      scope=SCOPE_SUBTREE)
+        self.assertEqual(1, len(res))
+
+        domainname = ldb.Dn(self.samdb, self.samdb.domain_dn()).canonical_str().replace("/", "")
+        try:
+            m = ldb.Message()
+            m.dn = res[0].dn
+            m["e1"] = MessageElement('trash', FLAG_MOD_REPLACE, "servicePrincipalName")
+            self.samdb.modify(m)
+        except LdbError, (enum, estr):
+            self.assertEqual(ldb.ERR_CONSTRAINT_VIOLATION, enum)
+            return
+        self.fail()
+
+    def test_mod_servicePrincipalName2(self):
+        computername=self.computernames[0]
+        self.add_computer_ldap(computername, "thatsAcomplPASS1")
+
+        res = self.admin_samdb.search("%s" % self.base_dn,
+                                      expression="(&(objectClass=computer)(samAccountName=%s$))" % computername,
+                                      scope=SCOPE_SUBTREE)
+        self.assertEqual(1, len(res))
+
+        domainname = ldb.Dn(self.samdb, self.samdb.domain_dn()).canonical_str().replace("/", "")
+        dnsname = "%s.%s" % (computername, domainname)
+        m = ldb.Message()
+        m.dn = res[0].dn
+        m["e1"] = MessageElement(["MOD_HOST/%s" % dnsname,
+                                  "MOD_HOST/%s" % computername],
+                                 FLAG_MOD_REPLACE, "servicePrincipalName")
+        self.samdb.modify(m)
+
+    def test_mod_servicePrincipalName3(self):
+        computername=self.computernames[0]
+        self.add_computer_ldap(computername, "thatsAcomplPASS1")
+
+        res = self.admin_samdb.search("%s" % self.base_dn,
+                                      expression="(&(objectClass=computer)(samAccountName=%s$))" % computername,
+                                      scope=SCOPE_SUBTREE)
+        self.assertEqual(1, len(res))
+
+        domainname = ldb.Dn(self.samdb, self.samdb.domain_dn()).canonical_str().replace("/", "")
+        dnsname = "%s.%s" % (computername, domainname)
+        try:
+            m = ldb.Message()
+            m.dn = res[0].dn
+            m["e1"] = MessageElement(["HOST/%s.fakedomain.lan" % computername,
+                                      "HOST/%s" % computername],
+                                     FLAG_MOD_REPLACE, "servicePrincipalName")
+            self.samdb.modify(m)
+        except LdbError, (enum, estr):
+            self.assertEqual(ldb.ERR_CONSTRAINT_VIOLATION, enum)
+            return
+        self.fail()
+
+    def test_mod_servicePrincipalName4(self):
+        computername=self.computernames[0]
+        self.add_computer_ldap(computername, "thatsAcomplPASS1")
+
+        res = self.admin_samdb.search("%s" % self.base_dn,
+                                      expression="(&(objectClass=computer)(samAccountName=%s$))" % computername,
+                                      scope=SCOPE_SUBTREE)
+        self.assertEqual(1, len(res))
+
+        domainname = ldb.Dn(self.samdb, self.samdb.domain_dn()).canonical_str().replace("/", "")
+        dnsname = "%s.%s" % (computername, domainname)
+        try:
+            m = ldb.Message()
+            m.dn = res[0].dn
+            m["e1"] = MessageElement(["HOST/%s" % dnsname,
+                                      "HOST/fakename"],
+                                     FLAG_MOD_REPLACE, "servicePrincipalName")
+            self.samdb.modify(m)
+        except LdbError, (enum, estr):
+            self.assertEqual(ldb.ERR_CONSTRAINT_VIOLATION, enum)
+            return
+        self.fail()
+
+    def test_mod_servicePrincipalName5(self):
+        computername=self.computernames[0]
+        self.add_computer_ldap(computername, "thatsAcomplPASS1")
+
+        res = self.admin_samdb.search("%s" % self.base_dn,
+                                      expression="(&(objectClass=computer)(samAccountName=%s$))" % computername,
+                                      scope=SCOPE_SUBTREE)
+        self.assertEqual(1, len(res))
+
+        domainname = ldb.Dn(self.samdb, self.samdb.domain_dn()).canonical_str().replace("/", "")
+        dnsname = "%s.%s" % (computername, domainname)
+        m = ldb.Message()
+        m.dn = res[0].dn
+        m["e1"] = MessageElement(["HOST/%s" % dnsname,
+                                  "HOST/mod_%s" % computername],
+                                 FLAG_MOD_REPLACE, "servicePrincipalName")
+        m["e2"] = MessageElement("mod_%s$" % computername, FLAG_MOD_REPLACE, "sAMAccountName")
+        self.samdb.modify(m)
+
     def test_attributes(self):
         computername = self.computernames[0]
         try:
