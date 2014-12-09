@@ -973,12 +973,151 @@ static int acl_check_machine_quota(struct ldb_module *module,
 	return LDB_SUCCESS;
 }
 
+static int acl_add_privilege_check_create_child(struct ldb_module *module,
+						struct ldb_request *req)
+{
+	int ret;
+	struct auth_session_info *sinfo;
+	struct ldb_context *ldb;
+	struct ldb_dn *parent_dn;
+	struct ldb_result *parent_res;
+	struct security_descriptor *parent_sd;
+	const struct dsdb_class *objectclass;
+	const struct dsdb_schema *schema;
+	const char *parent_attrs[] = {
+		"nTSecurityDescriptor",
+		NULL,
+	};
+	struct security_ace *ace;
+	NTSTATUS status;
+	char *sid_str;
+	enum ndr_err_code ndr_err;
+	DATA_BLOB data;
+	TALLOC_CTX *tmp_ctx;
+
+	ldb = ldb_module_get_ctx(module);
+
+	tmp_ctx = talloc_new(req);
+	if (tmp_ctx == NULL) {
+		return ldb_oom(ldb);
+	}
+
+	schema = dsdb_get_schema(ldb, tmp_ctx);
+	if (schema == NULL) {
+		talloc_free(tmp_ctx);
+		return ldb_operr(ldb);
+	}
+
+	objectclass = dsdb_get_structural_oc_from_msg(schema,
+						      req->op.add.message);
+	if (objectclass == NULL) {
+		talloc_free(tmp_ctx);
+		return ldb_operr(ldb);
+	}
+
+	sinfo = talloc_get_type_abort(ldb_get_opaque(ldb, "sessionInfo"),
+				      struct auth_session_info);
+	if (sinfo == NULL) {
+		talloc_free(tmp_ctx);
+		return ldb_operr(ldb);
+	}
+
+	/* Retrieve SD on the parent object */
+	parent_dn = ldb_dn_get_parent(tmp_ctx, req->op.add.message->dn);
+	if (parent_dn == NULL) {
+		talloc_free(tmp_ctx);
+		return ldb_oom(ldb);
+	}
+	ret = dsdb_module_search_dn(module, tmp_ctx, &parent_res, parent_dn,
+				    parent_attrs,
+				    DSDB_FLAG_NEXT_MODULE |
+				    DSDB_FLAG_AS_SYSTEM |
+				    DSDB_SEARCH_SHOW_RECYCLED,
+				    req);
+	if (ret != LDB_SUCCESS) {
+		ldb_asprintf_errstring(ldb,
+				       "%s - %s: Could not find SD for %s",
+				       ldb_strerror(ret),
+				       __func__,
+				       ldb_dn_get_linearized(parent_dn));
+		talloc_free(tmp_ctx);
+		return ret;
+	}
+	if (parent_res->count != 1) {
+		talloc_free(tmp_ctx);
+		return ldb_operr(ldb);
+	}
+
+	/* Modify SD on result to grant SEC_ADS_CREATE_CHILD to client */
+	ret = dsdb_get_sd_from_ldb_message(ldb, tmp_ctx, parent_res->msgs[0],
+					   &parent_sd);
+	if (ret != LDB_SUCCESS) {
+		talloc_free(tmp_ctx);
+		return ldb_operr(ldb);
+	}
+
+	sid_str = dom_sid_string(tmp_ctx, &sinfo->security_token->sids[PRIMARY_USER_SID_INDEX]);
+	if (sid_str == NULL) {
+		talloc_free(tmp_ctx);
+		return ldb_oom(ldb);
+	}
+
+	ace = security_ace_create(tmp_ctx, sid_str,
+				  SEC_ACE_TYPE_ACCESS_ALLOWED_OBJECT,
+				  SEC_ADS_CREATE_CHILD, 0);
+	if (ace == NULL) {
+		talloc_free(tmp_ctx);
+		return ldb_oom(ldb);
+	}
+	ace->object.object.type.type = objectclass->schemaIDGUID;
+	ace->object.object.flags |= SEC_ACE_OBJECT_TYPE_PRESENT;
+
+	status = security_descriptor_dacl_add(parent_sd, ace);
+	if (!NT_STATUS_IS_OK(status)) {
+		talloc_free(tmp_ctx);
+		return ldb_operr(ldb);
+	}
+
+	ldb_msg_remove_attr(parent_res->msgs[0], "nTSecurityDescriptor");
+	ndr_err = ndr_push_struct_blob(&data, tmp_ctx, parent_sd,
+				       (ndr_push_flags_fn_t)ndr_push_security_descriptor);
+	if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
+		talloc_free(tmp_ctx);
+		return ldb_operr(ldb);
+	}
+	ret = ldb_msg_add_steal_value(parent_res->msgs[0],
+				      "nTSecurityDescriptor",
+				      &data);
+	if (ret != LDB_SUCCESS) {
+		talloc_free(tmp_ctx);
+		return ret;
+	}
+
+	/* Perform access check with SEC_ADS_CREATE_CHILD granted */
+	ret = dsdb_check_access_on_dn_internal(ldb, parent_res, tmp_ctx,
+					       sinfo->security_token, parent_dn,
+					       SEC_ADS_CREATE_CHILD,
+					       &objectclass->schemaIDGUID);
+	if (ret != LDB_SUCCESS) {
+		ldb_asprintf_errstring(ldb,
+				       "%s - %s: Access check failed on %s",
+				       ldb_strerror(ret),
+				       __func__,
+				       ldb_dn_get_linearized(parent_dn));
+		talloc_free(tmp_ctx);
+		return ret;
+	}
+
+	talloc_free(tmp_ctx);
+	return LDB_SUCCESS;
+}
+
 /*
  * Check seMachineAccount privilege. [MS-ADTS] section 3.1.1.5.2.1 and
  * [MS-SAMR] 3.1.5.4.4 after an LDB_ERR_INSUFFICIENT_ACCESS_RIGHTS
  */
 static int acl_add_privileges(struct ldb_module *module,
-				    struct ldb_request *req)
+			      struct ldb_request *req)
 {
 	struct loadparm_context *lp_ctx;
 	struct auth_session_info *sinfo;
@@ -1154,6 +1293,15 @@ static int acl_add_privileges(struct ldb_module *module,
 	msg = ldb_msg_copy_shallow(req, req->op.add.message);
 	if (msg == NULL) {
 		return ldb_oom(ldb);
+	}
+
+	/*
+	 * Check if the operation would have been allowed if the client
+	 * would have the SEC_ADS_CREATE_CHILD
+	 */
+	ret = acl_add_privilege_check_create_child(module, req);
+	if (ret != LDB_SUCCESS) {
+		return ret;
 	}
 
 	/* Append msDS-CreatorSID */
