@@ -155,6 +155,20 @@ class MachineAccountPrivilegeTests(samba.tests.TestCase):
                 ace.access_mask = ace.access_mask & ~(security.SEC_STD_DELETE | security.SEC_ADS_DELETE_TREE)
         self.sddl_reference  = self.sd_reference.as_sddl(self.domain_sid)
 
+        # Create reference SDDL for computers created in domain controllers OU
+        old_sd = self.sd_utils.read_sd_on_dn("OU=Domain Controllers,%s" % (self.base_dn))
+        self.sd_utils.dacl_add_ace("OU=Domain Controllers,%s" % (self.base_dn), mod)
+        self.add_computer_ldap("testcomputer-t2", None, container="OU=Domain Controllers,%s" % (self.base_dn))
+        self.sd_utils.modify_sd_on_dn("OU=Domain Controllers,%s" % (self.base_dn), old_sd)
+        self.sd_reference_dcs_container = self.sd_utils.read_sd_on_dn("CN=testcomputer-t2,OU=Domain Controllers,%s" % (self.base_dn))
+        self.sd_reference_dcs_container.owner_sid = security.dom_sid("%s-512" % self.domain_sid)
+        self.sd_reference_dcs_container.group_sid = security.dom_sid("%s-513" % self.domain_sid)
+        self.sd_reference_dcs_container.type = self.sd_reference.type & ~(security.SEC_DESC_DACL_AUTO_INHERITED + security.SEC_DESC_SACL_AUTO_INHERITED)
+        for ace in self.sd_reference_dcs_container.dacl.aces:
+            if ace.type == security.SEC_ACE_TYPE_ACCESS_ALLOWED and ace.trustee == user_sid:
+                ace.access_mask = ace.access_mask & ~(security.SEC_STD_DELETE | security.SEC_ADS_DELETE_TREE)
+        self.sddl_reference_dcs_container  = self.sd_reference_dcs_container.as_sddl(self.domain_sid)
+
         # Now reconnect without domain admin rights
         self.samdb = SamDB(url=ldaphost, credentials=self.unpriv_creds, lp=lp)
 
@@ -164,11 +178,13 @@ class MachineAccountPrivilegeTests(samba.tests.TestCase):
         for computername in self.computernames:
             delete_force(self.admin_samdb, "CN=%s,CN=Computers,%s" % (computername, self.base_dn))
             delete_force(self.admin_samdb, "CN=%s,OU=test_computer_ou1,%s" % (computername, self.base_dn))
+            delete_force(self.admin_samdb, "CN=%s,OU=Domain Controllers,%s" % (computername, self.base_dn))
         delete_force(self.admin_samdb, "CN=testcomputer-t,OU=test_computer_ou1,%s" % (self.base_dn))
+        delete_force(self.admin_samdb, "CN=testcomputer-t2,OU=Domain Controllers,%s" % (self.base_dn))
         delete_force(self.admin_samdb, "OU=test_computer_ou1,%s" % (self.base_dn))
         delete_force(self.admin_samdb, "CN=%s,CN=Users,%s" % (self.unpriv_user, self.base_dn))
 
-    def check_computer_account(self, sid=None, computername=None, dnshostname=None, password_was_set=False, over_samr=False):
+    def check_computer_account(self, sid=None, computername=None, dnshostname=None, password_was_set=False, over_samr=False, sddl_reference=None):
         def arcfour_encrypt(key, data):
             from Crypto.Cipher import ARC4
             c = ARC4.new(key)
@@ -231,7 +247,10 @@ class MachineAccountPrivilegeTests(samba.tests.TestCase):
             self.assertFalse("servicePrincipalName" in res[0])
 
         sddl = desc.as_sddl(self.domain_sid)
-        self.assertEqual(self.sddl_reference, sddl)
+        if sddl_reference is None:
+            self.assertEqual(self.sddl_reference, sddl)
+        else:
+            self.assertEqual(sddl_reference, sddl)
 
         # Assert password set over LDAP
         newpwd = unicode('"' + 'thatsAcomplPASS2' + '"', 'utf-8').encode('utf-16-le')
@@ -336,8 +355,12 @@ class MachineAccountPrivilegeTests(samba.tests.TestCase):
                                         computername=computername, over_samr=True)
 
     def add_computer_ldap(self, computername, pwd, uac=samba.dsdb.UF_WORKSTATION_TRUST_ACCOUNT,
-                          add_uac=True, add_samaccountname=True, add_dns=True, add_spn=True, add_pwd=True, others=None):
-        dn = "CN=%s,OU=test_computer_ou1,%s" % (computername, self.base_dn)
+                          add_uac=True, add_samaccountname=True, add_dns=True, add_spn=True, add_pwd=True, others=None,
+                          container=None):
+        if container is None:
+            container = "OU=test_computer_ou1,%s" % self.base_dn
+        dn = "CN=%s,%s" % (computername, container)
+
         domainname = ldb.Dn(self.samdb, self.samdb.domain_dn()).canonical_str().replace("/", "")
         samaccountname = "%s$" % computername
         dnshostname = "%s.%s" % (computername, domainname)
@@ -400,6 +423,22 @@ class MachineAccountPrivilegeTests(samba.tests.TestCase):
             domainname = ldb.Dn(self.samdb, self.samdb.domain_dn()).canonical_str().replace("/", "")
             dnshostname = "%s.%s" % (computername, domainname)
             self.check_computer_account(computername=computername, dnshostname=dnshostname, password_was_set=True)
+
+    def test_add_computer_to_dc_container(self):
+        idx = 0
+        container = "OU=Domain Controllers,%s" % self.base_dn
+        for computername in self.computernames:
+            try:
+                self.add_computer_ldap(computername, "thatsAcomplPASS1", container=container)
+                idx += 1
+            except LdbError, (enum, estr):
+                if enum == ldb.ERR_UNWILLING_TO_PERFORM and idx == self.quota:
+                    return
+                else:
+                    raise
+            domainname = ldb.Dn(self.samdb, self.samdb.domain_dn()).canonical_str().replace("/", "")
+            dnshostname = "%s.%s" % (computername, domainname)
+            self.check_computer_account(computername=computername, dnshostname=dnshostname, password_was_set=True, sddl_reference = self.sddl_reference_dcs_container)
 
     def test_add_computer_ldap_dc(self):
         computername="testdc"
