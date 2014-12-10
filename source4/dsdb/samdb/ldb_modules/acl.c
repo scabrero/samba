@@ -1071,16 +1071,23 @@ static int acl_add_privileges(struct ldb_module *module,
 				DEBUG(0, ("acl: Invalid userAccountControl attribute value in add computer request using elevated seMachineAccount privilege\n"));
 				return LDB_ERR_CONSTRAINT_VIOLATION;
 			}
-			if (uac & ~(UF_WORKSTATION_TRUST_ACCOUNT | UF_ACCOUNTDISABLE)) {
-				DEBUG(0, ("acl: Invalid userAccountControl attribute value in add computer request using elevated seMachineAccount privilege\n"));
-				return LDB_ERR_CONSTRAINT_VIOLATION;
+			if (samr_request == NULL) {
+				if (uac & ~(UF_WORKSTATION_TRUST_ACCOUNT | UF_ACCOUNTDISABLE)) {
+					DEBUG(0, ("acl: Invalid userAccountControl attribute value in add computer request using elevated seMachineAccount privilege\n"));
+					return LDB_ERR_CONSTRAINT_VIOLATION;
+				}
+			} else {
+				if (uac & ~(UF_WORKSTATION_TRUST_ACCOUNT | UF_ACCOUNTDISABLE | UF_PASSWD_NOTREQD)) {
+					DEBUG(0, ("acl: Invalid userAccountControl attribute value in add computer request using elevated seMachineAccount privilege\n"));
+					return LDB_ERR_CONSTRAINT_VIOLATION;
+				}
 			}
 		}
 		if (!ldb_msg_find_ldb_val(req->op.add.message, "sAMAccountName")) {
 			DEBUG(0, ("acl: Missing sAMAccountName attribute in add computer request using elevated seMachineAccount privilege\n"));
 			return LDB_ERR_UNWILLING_TO_PERFORM;
 		}
-		if (!(uac & UF_ACCOUNTDISABLE)) {
+		if (!(uac & UF_ACCOUNTDISABLE) && !(uac & UF_PASSWD_NOTREQD)) {
 			if (!ldb_msg_find_ldb_val(req->op.add.message, "unicodePwd")) {
 				DEBUG(0, ("acl: Missing unicodePwd attribute in add computer request using elevated seMachineAccount privilege\n"));
 				return LDB_ERR_UNWILLING_TO_PERFORM;

@@ -110,7 +110,7 @@ NTSTATUS dsdb_add_user(struct ldb_context *ldb,
 	if (acct_flags == ACB_NORMAL) {
 		container = "CN=Users";
 		obj_class = "user";
-		user_account_control = UF_NORMAL_ACCOUNT;
+		user_account_control = UF_NORMAL_ACCOUNT  | UF_PASSWD_NOTREQD | UF_ACCOUNTDISABLE;
 	} else if (acct_flags == ACB_WSTRUST) {
 		if (cn_name[cn_name_len - 1] != '$') {
 			ldb_transaction_cancel(ldb);
@@ -119,8 +119,7 @@ NTSTATUS dsdb_add_user(struct ldb_context *ldb,
 		cn_name[cn_name_len - 1] = '\0';
 		container = "CN=Computers";
 		obj_class = "computer";
-		user_account_control = UF_WORKSTATION_TRUST_ACCOUNT;
-
+		user_account_control = UF_WORKSTATION_TRUST_ACCOUNT | UF_PASSWD_NOTREQD;
 	} else if (acct_flags == ACB_SVRTRUST) {
 		if (cn_name[cn_name_len - 1] != '$') {
 			ldb_transaction_cancel(ldb);
@@ -129,7 +128,7 @@ NTSTATUS dsdb_add_user(struct ldb_context *ldb,
 		cn_name[cn_name_len - 1] = '\0';
 		container = "OU=Domain Controllers";
 		obj_class = "computer";
-		user_account_control = UF_SERVER_TRUST_ACCOUNT;
+		user_account_control = UF_SERVER_TRUST_ACCOUNT | UF_PASSWD_NOTREQD | UF_ACCOUNTDISABLE;
 	} else if (acct_flags == ACB_DOMTRUST) {
 		DEBUG(3, ("Invalid account flags specified:  cannot create domain trusts via this interface (must use LSA CreateTrustedDomain calls\n"));
 		ldb_transaction_cancel(ldb);
@@ -144,8 +143,6 @@ NTSTATUS dsdb_add_user(struct ldb_context *ldb,
 		talloc_free(tmp_ctx);
 		return NT_STATUS_INVALID_PARAMETER;
 	}
-
-	user_account_control |= UF_ACCOUNTDISABLE | UF_PASSWD_NOTREQD;
 
 	/* add core elements to the ldb_message for the user */
 	msg->dn = ldb_dn_copy(msg, ldb_get_default_basedn(ldb));
