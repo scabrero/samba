@@ -41,6 +41,7 @@ NTSTATUS dsdb_add_user(struct ldb_context *ldb,
 		       struct ldb_dn **dn)
 {
 	const char *name;
+	struct ldb_request *req;
 	struct ldb_message *msg;
 	int ret;
 	const char *container, *obj_class=NULL;
@@ -172,8 +173,41 @@ NTSTATUS dsdb_add_user(struct ldb_context *ldb,
 		}
 	}
 
+	ret = ldb_msg_sanity_check(ldb, msg);
+	if (ret != LDB_SUCCESS) {
+		ldb_transaction_cancel(ldb);
+		talloc_free(tmp_ctx);
+		return NT_STATUS_INTERNAL_ERROR;
+	}
+
+	ret = ldb_build_add_req(&req, ldb, tmp_ctx, msg, NULL, NULL,
+				ldb_op_default_callback, NULL);
+	if (ret != LDB_SUCCESS) {
+		ldb_transaction_cancel(ldb);
+		talloc_free(tmp_ctx);
+		return NT_STATUS_INTERNAL_ERROR;
+	}
+
+	/*
+	 * If creating a computer account add control to relax contrains on
+	 * attributes when the account is created through SAM-R instead LDAP
+	 */
+	if (acct_flags == ACB_WSTRUST) {
+		ret = ldb_request_add_control(req, DSDB_CONTROL_SAMR_CREATE_COMPUTER_ACCOUNT,
+					      false, NULL);
+		if (ret != LDB_SUCCESS) {
+			ldb_transaction_cancel(ldb);
+			talloc_free(tmp_ctx);
+			return NT_STATUS_INTERNAL_ERROR;
+		}
+	}
+
 	/* create the user */
-	ret = ldb_add(ldb, msg);
+	ret = ldb_request(ldb, req);
+	if (ret == LDB_SUCCESS) {
+		ret = ldb_wait(req->handle, LDB_WAIT_ALL);
+	}
+
 	switch (ret) {
 	case LDB_SUCCESS:
 		break;
