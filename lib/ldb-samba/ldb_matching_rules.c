@@ -282,7 +282,13 @@ static int ldb_comparator_trans(struct ldb_context *ldb,
 		return LDB_ERR_NO_SUCH_ATTRIBUTE;
 	}
 
-	if (schema_attr->linkID == 0 && !schema_attr->one_way_link) {
+	/*
+	 * This extended match filter is only valid for linked attributes,
+	 * following the MS definition (the schema attribute has a linkID
+	 * defined). See dochelp request 114111212024789 on cifs-protocols
+	 * mailing list.
+	 */
+	if (schema_attr->linkID == 0) {
 		talloc_free(tmp_ctx);
 		return LDB_ERR_INAPPROPRIATE_MATCHING;
 	}
