@@ -282,6 +282,7 @@ Depends: libc6-dev,
          libparse-pidl-perl,
          libpopt-dev,
          libtalloc-dev,
+         libtevent-dev,
          libtdb-dev (>= 1.2.11),
          samba-libs (= ${binary:Version}),
          ${misc:Depends}
