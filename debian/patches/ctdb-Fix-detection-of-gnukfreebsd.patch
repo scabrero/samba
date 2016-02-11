@@ -1,0 +1,34 @@
+From: Steven Chamberlain <steven@pyro.eu.org>
+Date: Thu, 11 Feb 2016 02:27:29 +0000
+Subject: [PATCH] ctdb: Fix detection of gnukfreebsd
+
+GNU/kFreeBSD's platform name is 'gnukfreebsd', not just 'kfreebsd'.
+
+Reviewed-by: Andrew Bartlett <abartlet@samba.org>
+Reviewed-by: Garming Sam <garming@catalyst.net.nz>
+
+Autobuild-User(master): Garming Sam <garming@samba.org>
+Autobuild-Date(master): Tue Mar  1 05:42:23 CET 2016 on sn-devel-144
+
+Bug: https://github.com/samba-team/samba/pull/55
+Debian-Bug: https://bugs.debian.org/802621
+---
+ ctdb/wscript | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/ctdb/wscript b/ctdb/wscript
+index 055c853..6e07aed 100755
+--- a/ctdb/wscript
++++ b/ctdb/wscript
+@@ -306,7 +306,7 @@ def build(bld):
+         CTDB_SYSTEM_SRC = bld.SUBDIR('common', 'system_aix.c')
+     elif sys.platform.startswith('freebsd'):
+         CTDB_SYSTEM_SRC = bld.SUBDIR('common', 'system_freebsd.c')
+-    elif sys.platform == 'kfreebsd':
++    elif sys.platform.startswith('gnukfreebsd'):
+         CTDB_SYSTEM_SRC = bld.SUBDIR('common', 'system_kfreebsd.c')
+     elif sys.platform == 'gnu':
+         CTDB_SYSTEM_SRC = bld.SUBDIR('common', 'system_gnu.c')
+-- 
+2.8.0.rc3
+
