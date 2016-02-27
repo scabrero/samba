@@ -26,3 +26,4 @@ samba-doc/
 files
 *.debhelper
 *.debhelper.log
+*~
