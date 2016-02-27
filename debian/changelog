@@ -1,3 +1,12 @@
+samba (2:4.3.6+dfsg-1) UNRELEASED; urgency=medium
+
+  * New upstream release.
+   + Fixes:
+    - CVE-2015-7560: Incorrect ACL get/set allowed on symlink path.
+    - CVE-2016-0771 (Out-of-bounds read in internal DNS server.
+
+ -- Jelmer Vernooij <jelmer@debian.org>  Sat, 27 Feb 2016 23:28:53 +0000
+
 samba (2:4.3.5+dfsg-1) unstable; urgency=medium
 
   * New upstream release.
