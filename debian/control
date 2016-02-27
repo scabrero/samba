@@ -73,7 +73,7 @@ Depends: adduser,
          ${misc:Depends},
          ${python:Depends},
          ${shlibs:Depends}
-Recommends: attr, logrotate, samba-vfs-modules, samba-dsdb-modules
+Recommends: attr, logrotate, samba-dsdb-modules, samba-vfs-modules
 Suggests: bind9 (>= 1:9.5.1),
           bind9utils,
           ctdb,
@@ -82,7 +82,7 @@ Suggests: bind9 (>= 1:9.5.1),
           smbldap-tools,
           winbind
 Enhances: bind9, ntp
-Breaks: qtsmbstatus-server (<< 2.2.1-3~),
+Breaks: qtsmbstatus-server (<< 2.2.1-3~)
 Replaces: libsamdb0 (<< 4.0.0~alpha17~),
           python-samba (<< 2:4.1.4+dfsg-3),
           samba-ad-dc,
@@ -153,9 +153,9 @@ Replaces: libdcerpc-server0 (<< 2:4.0.9),
 # unpacked, to avoid any code referencing the old location of the tdb files
 # see bug #726472
 Conflicts: libpam-smbpass (<< 2:4),
+           samba (<< 2:4),
            samba-common-bin (<< 2:4),
            samba-dsdb-modules (<< 2:4.1.9+dfsg-2),
-           samba (<< 2:4),
            winbind (<< 2:4)
 Description: Samba core libraries
  Samba is an implementation of the SMB/CIFS protocol for Unix systems,
@@ -233,7 +233,10 @@ Description: command-line SMB/CIFS clients for Unix
 Package: samba-testsuite
 Architecture: any
 Suggests: subunit
-Replaces: samba-doc (<< 2:4.0.5~), samba-tools, samba4-testsuite, samba-libs (<< 2:4.0.10+dfsg-4)
+Replaces: samba-doc (<< 2:4.0.5~),
+          samba-libs (<< 2:4.0.10+dfsg-4),
+          samba-tools,
+          samba4-testsuite
 Conflicts: samba-doc (<< 2:4.0.5~), samba-libs (<< 2:4.0.10+dfsg-4)
 Depends: samba-common-bin, ${misc:Depends}, ${shlibs:Depends}
 Description: test suite from Samba
@@ -282,8 +285,8 @@ Depends: libc6-dev,
          libparse-pidl-perl,
          libpopt-dev,
          libtalloc-dev,
-         libtevent-dev,
          libtdb-dev (>= 1.2.11),
+         libtevent-dev,
          samba-libs (= ${binary:Version}),
          ${misc:Depends}
 Section: devel
@@ -332,9 +335,9 @@ Pre-Depends: ${misc:Pre-Depends}
 Architecture: any
 Section: python
 Provides: ${python:Provides}
-Depends: python-ldb,
+Depends: python-crypto,
+         python-ldb,
          python-tdb,
-         python-crypto,
          ${misc:Depends},
          ${python:Depends},
          ${shlibs:Depends}
@@ -348,7 +351,8 @@ Description: Python bindings for Samba
 
 Package: samba-dsdb-modules
 Architecture: any
-Replaces: libgensec0 (<< 4.0.0~alpha17~git20110724.dfsg1-1), samba-libs (<< 2:4.1.9+dfsg-2)
+Replaces: libgensec0 (<< 4.0.0~alpha17~git20110724.dfsg1-1),
+          samba-libs (<< 2:4.1.9+dfsg-2)
 Section: libs
 Depends: ${misc:Depends}, ${shlibs:Depends}
 Enhances: libldb1
@@ -539,7 +543,14 @@ Description: Samba winbind client library - development files
 Package: ctdb
 Architecture: any
 Multi-Arch: foreign
-Depends: ${shlibs:Depends}, ${misc:Depends}, lsb-base, iproute2 [linux-any], psmisc, tdb-tools, time, sudo
+Depends: iproute2 [linux-any],
+         lsb-base,
+         psmisc,
+         sudo,
+         tdb-tools,
+         time,
+         ${misc:Depends},
+         ${shlibs:Depends}
 Recommends: ethtool [linux-any]
 Suggests: logrotate, lsof
 Description: clustered database to store temporary data

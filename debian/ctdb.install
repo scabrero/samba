@@ -18,7 +18,7 @@ usr/share/man/man1/ctdbd_wrapper.1
 usr/share/man/man1/ltdbtool.1
 usr/share/man/man1/onnode.1
 usr/share/man/man1/ping_pong.1
-usr/share/man/man7/ctdb.7
+usr/share/man/man5/ctdbd.conf.5
 usr/share/man/man7/ctdb-statistics.7
 usr/share/man/man7/ctdb-tunables.7
-usr/share/man/man5/ctdbd.conf.5
+usr/share/man/man7/ctdb.7

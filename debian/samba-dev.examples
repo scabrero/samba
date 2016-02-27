@@ -1,5 +1,5 @@
 examples/VFS
-examples/libsmbclient
 examples/auth
-examples/pdb
+examples/libsmbclient
 examples/nss
+examples/pdb
