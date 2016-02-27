@@ -3,6 +3,7 @@ samba (2:4.3.5+dfsg-1) UNRELEASED; urgency=medium
   * New upstream release.
   * Fixed usershare.patch to apply against new version.
   * Loosen dependencies on ldb to ldb >= 1.1.21, per upstream.
+  * Drop patch sockets-with-htons.patch: applied upstream.
 
  -- Jelmer Vernooij <jelmer@debian.org>  Sat, 05 Mar 2016 15:56:42 +0000
 
