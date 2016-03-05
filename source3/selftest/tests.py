@@ -177,6 +177,7 @@ for env in ["nt4_dc"]:
 for env in ["fileserver"]:
     plantestsuite("samba3.blackbox.preserve_case (%s)" % env, env, [os.path.join(samba3srcdir, "script/tests/test_preserve_case.sh"), '$SERVER', '$DOMAIN', '$USERNAME', '$PASSWORD', '$PREFIX', smbclient3])
     plantestsuite("samba3.blackbox.dfree_command (%s)" % env, env, [os.path.join(samba3srcdir, "script/tests/test_dfree_command.sh"), '$SERVER', '$DOMAIN', '$USERNAME', '$PASSWORD', '$PREFIX', smbclient3])
+    plantestsuite("samba3.blackbox.shadow_copy2 (%s)" % env, env, [os.path.join(samba3srcdir, "script/tests/test_shadow_copy.sh"), '$SERVER', '$SERVER_IP', '$DOMAIN', '$USERNAME', '$PASSWORD', '$LOCAL_PATH/shadow', smbclient3])
 
     #
     # tar command tests
@@ -380,8 +381,8 @@ for t in tests:
         plansmbtorture4testsuite(t, "nt4_dc", '//$SERVER_IP/tmpsort -U$USERNAME%$PASSWORD')
         plansmbtorture4testsuite(t, "ad_dc", '//$SERVER/tmp -U$USERNAME%$PASSWORD')
     elif t == "vfs.fruit":
-        plansmbtorture4testsuite(t, "nt4_dc", '//$SERVER_IP/tmp -U$USERNAME%$PASSWORD --option=torture:share1=vfs_fruit --option=torture:share2=tmp --option=torture:localdir=$SELFTEST_PREFIX/nt4_dc/share')
-        plansmbtorture4testsuite(t, "ad_dc", '//$SERVER_IP/tmp -U$USERNAME%$PASSWORD --option=torture:share1=vfs_fruit --option=torture:share2=tmp --option=torture:localdir=$SELFTEST_PREFIX/ad_dc/share')
+        plansmbtorture4testsuite(t, "nt4_dc", '//$SERVER_IP/vfs_fruit -U$USERNAME%$PASSWORD --option=torture:localdir=$SELFTEST_PREFIX/nt4_dc/share')
+        plansmbtorture4testsuite(t, "ad_dc", '//$SERVER_IP/vfs_fruit -U$USERNAME%$PASSWORD --option=torture:localdir=$SELFTEST_PREFIX/ad_dc/share')
     elif t == "rpc.schannel_anon_setpw":
         plansmbtorture4testsuite(t, "nt4_dc", '//$SERVER_IP/tmp -U$%', description="anonymous password set")
         plansmbtorture4testsuite(t, "nt4_dc_schannel", '//$SERVER_IP/tmp -U$%', description="anonymous password set (schannel enforced server-side)")

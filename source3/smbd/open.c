@@ -362,7 +362,7 @@ NTSTATUS fd_open(struct connection_struct *conn,
 	 * client should be doing this.
 	 */
 
-	if (fsp->posix_open || !lp_follow_symlinks(SNUM(conn))) {
+	if ((fsp->posix_flags & FSP_POSIX_FLAGS_OPEN) || !lp_follow_symlinks(SNUM(conn))) {
 		flags |= O_NOFOLLOW;
 	}
 #endif
@@ -945,7 +945,7 @@ static NTSTATUS open_file(files_struct *fsp,
 				access_mask);
 
 		if (NT_STATUS_EQUAL(status, NT_STATUS_OBJECT_NAME_NOT_FOUND) &&
-				fsp->posix_open &&
+				(fsp->posix_flags & FSP_POSIX_FLAGS_OPEN) &&
 				S_ISLNK(smb_fname->st.st_ex_mode)) {
 			/* This is a POSIX stat open for delete
 			 * or rename on a symlink that points
@@ -2705,7 +2705,7 @@ static NTSTATUS open_file_ntcreate(connection_struct *conn,
 	fsp->access_mask = open_access_mask; /* We change this to the
 					      * requested access_mask after
 					      * the open is done. */
-	fsp->posix_open = posix_open;
+	fsp->posix_flags |= posix_open ? FSP_POSIX_FLAGS_OPEN : 0;
 
 	if (timeval_is_zero(&request_time)) {
 		request_time = fsp->open_time;
@@ -3167,8 +3167,8 @@ static NTSTATUS open_file_ntcreate(connection_struct *conn,
 	}
 
 	if (info != FILE_WAS_OPENED) {
-		/* Files should be initially set as archive */
-		if (lp_map_archive(SNUM(conn)) ||
+		/* Overwritten files should be initially set as archive */
+		if ((info == FILE_WAS_OVERWRITTEN && lp_map_archive(SNUM(conn))) ||
 		    lp_store_dos_attributes(SNUM(conn))) {
 			if (!posix_open) {
 				if (file_set_dosmode(conn, smb_fname,
@@ -3571,7 +3571,9 @@ static NTSTATUS open_directory(connection_struct *conn,
 	fsp->oplock_type = NO_OPLOCK;
 	fsp->sent_oplock_break = NO_BREAK_SENT;
 	fsp->is_directory = True;
-	fsp->posix_open = (file_attributes & FILE_FLAG_POSIX_SEMANTICS) ? True : False;
+	if (file_attributes & FILE_FLAG_POSIX_SEMANTICS) {
+		fsp->posix_flags |= FSP_POSIX_FLAGS_ALL;
+	}
 	status = fsp_set_smb_fname(fsp, smb_dname);
 	if (!NT_STATUS_IS_OK(status)) {
 		file_free(req, fsp);
@@ -4704,15 +4706,11 @@ static NTSTATUS create_file_unixpath(connection_struct *conn,
 
 	/* Save the requested allocation size. */
 	if ((info == FILE_WAS_CREATED) || (info == FILE_WAS_OVERWRITTEN)) {
-		if (allocation_size
-		    && (allocation_size > fsp->fsp_name->st.st_ex_size)) {
+		if ((allocation_size > fsp->fsp_name->st.st_ex_size)
+		    && !(fsp->is_directory))
+		{
 			fsp->initial_allocation_size = smb_roundup(
 				fsp->conn, allocation_size);
-			if (fsp->is_directory) {
-				/* Can't set allocation size on a directory. */
-				status = NT_STATUS_ACCESS_DENIED;
-				goto fail;
-			}
 			if (vfs_allocate_file_space(
 				    fsp, fsp->initial_allocation_size) == -1) {
 				status = NT_STATUS_DISK_FULL;
