@@ -1,4 +1,4 @@
-samba (2:4.3.5+dfsg-2) UNRELEASED; urgency=medium
+samba (2:4.3.5+dfsg-2) unstable; urgency=medium
 
   * Move strict ldb dependency to samba-dsdb-modules package, which
     actually contains the modules. Closes: #816210
