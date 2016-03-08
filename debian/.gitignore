@@ -28,3 +28,4 @@ files
 *.debhelper.log
 *~
 debian-build-stamp
+debhelper-build-stamp
