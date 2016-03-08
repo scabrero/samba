@@ -2,6 +2,8 @@ samba (2:4.3.5+dfsg-3) UNRELEASED; urgency=medium
 
   * Fix dhclient hook if samba is not installed. Thanks, Jan Braun.
     Closes: #801976
+  * Rebuild against current version of ldb in the archive. Closes:
+    #817036
 
  -- Jelmer Vernooij <jelmer@debian.org>  Tue, 08 Mar 2016 00:24:10 +0000
 
