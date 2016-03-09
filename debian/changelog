@@ -7,6 +7,22 @@ samba (2:4.3.6+dfsg-1) unstable; urgency=medium
 
  -- Jelmer Vernooij <jelmer@debian.org>  Sat, 27 Feb 2016 23:28:53 +0000
 
+samba (2:4.3.5+dfsg-3) unstable; urgency=medium
+
+  * Fix dhclient hook if samba is not installed. Thanks, Jan Braun.
+    Closes: #801976
+  * Rebuild against current version of ldb in the archive. Closes:
+    #817036
+
+ -- Jelmer Vernooĳ <jelmer@debian.org>  Tue, 08 Mar 2016 00:24:10 +0000
+
+samba (2:4.3.5+dfsg-2) unstable; urgency=medium
+
+  * Move strict ldb dependency to samba-dsdb-modules package, which
+    actually contains the modules. Closes: #816210
+
+ -- Jelmer Vernooij <jelmer@debian.org>  Sun, 06 Mar 2016 22:51:53 +0000
+
 samba (2:4.3.5+dfsg-1) unstable; urgency=medium
 
   * New upstream release.

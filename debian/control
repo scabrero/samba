@@ -116,7 +116,7 @@ Pre-Depends: ${misc:Pre-Depends}
 Multi-Arch: same
 Architecture: any
 Section: libs
-Depends: ${ldb:Depends}, ${misc:Depends}, ${shlibs:Depends}
+Depends: ${misc:Depends}, ${shlibs:Depends}
 Breaks: libdcerpc-server0 (<< 2:4.0.9),
         libdcerpc0 (<< 2:4.0.9),
         libgensec0 (<< 2:4.0.9),
@@ -354,7 +354,7 @@ Architecture: any
 Replaces: libgensec0 (<< 4.0.0~alpha17~git20110724.dfsg1-1),
           samba-libs (<< 2:4.1.9+dfsg-2)
 Section: libs
-Depends: ${misc:Depends}, ${shlibs:Depends}
+Depends: ${misc:Depends}, ${shlibs:Depends}, ${ldb:Depends}
 Enhances: libldb1
 Description: Samba Directory Services Database
  Samba is an implementation of the SMB/CIFS protocol for Unix systems,
