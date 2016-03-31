@@ -104,7 +104,7 @@ override_dh_auto_test:
 override_dh_systemd_start:
 	dh_systemd_start -pctdb --no-start --no-restart-on-upgrade
 
-override_dh_installdocs:
+override_dh_installdocs-arch:
 	cp ctdb/config/events.d/README ctdb/README.eventscripts
 	cp ctdb/config/notify.d.README ctdb/README.notify.d
 	dh_installdocs
