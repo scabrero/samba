@@ -2,6 +2,8 @@ samba (2:4.3.6+dfsg-2) UNRELEASED; urgency=medium
 
   * Fix FTBFS when built with dpkg-buildpackage -A (Closes: #818146). Patch by
     Santiago Vila
+  * Drop samba from winbind depends and use samba-common* instead
+    (Closes: #732604)
 
  -- Mathieu Parent <sathieu@debian.org>  Thu, 31 Mar 2016 22:26:11 +0200
 
