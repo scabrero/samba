@@ -15,3 +15,4 @@ Fix-privacy-breach-on-google.com.patch
 fix-cluster-build.diff
 disable-socketwrapper.diff
 ctdb-Fix-detection-of-gnukfreebsd.patch
+no_build_options.patch

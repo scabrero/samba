@@ -1200,7 +1200,7 @@ extern void build_options(bool screen);
 	}
 
 	if (print_build_options) {
-		build_options(True); /* Display output to screen as well as debug */
+		DEBUG(0, ("For build options, please check the Debian packaging (apt-get source samba)."));
 		exit(0);
 	}
 
@@ -1270,9 +1270,6 @@ extern void build_options(bool screen);
 
 	DEBUG(2,("uid=%d gid=%d euid=%d egid=%d\n",
 		 (int)getuid(),(int)getgid(),(int)geteuid(),(int)getegid()));
-
-	/* Output the build options to the debug log */ 
-	build_options(False);
 
 	if (sizeof(uint16_t) < 2 || sizeof(uint32_t) < 4) {
 		DEBUG(0,("ERROR: Samba is not configured correctly for the word size on your machine\n"));
