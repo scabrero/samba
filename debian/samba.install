@@ -1,3 +1,4 @@
+etc/ufw/applications.d/samba
 usr/bin/eventlogadm
 usr/bin/oLschema2ldif
 usr/bin/pdbedit

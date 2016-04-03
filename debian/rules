@@ -157,6 +157,8 @@ override_dh_install:
 	mkdir -p debian/samba/usr/lib/$(PYSHORT)/dist-packages/samba
 	mv $(DESTDIR)/usr/lib/$(PYSHORT)/dist-packages/samba/dckeytab.so \
 	   debian/samba/usr/lib/$(PYSHORT)/dist-packages/samba/dckeytab.so
+	mkdir -p $(DESTDIR)/etc/ufw/applications.d
+	install -m644 debian/samba.ufw.profile $(DESTDIR)/etc/ufw/applications.d/samba
 	# use upstream version of smb.conf.5 if there is no built version
 	# this is a temporary workaround for #750593 in xsltproc
 	[ -e $(DESTIDR)/usr/share/man/man5/smb.conf.5 ] || \
