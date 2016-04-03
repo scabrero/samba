@@ -1,9 +1,15 @@
 samba (2:4.3.6+dfsg-2) UNRELEASED; urgency=medium
 
+  [ Mathieu Parent ]
   * Fix FTBFS when built with dpkg-buildpackage -A (Closes: #818146). Patch by
     Santiago Vila
   * Drop samba from winbind depends and use samba-common* instead
     (Closes: #732604)
+  * Add an override to script-not-executable etc/ctdb/events.d/10.external
+  * Add ufw integration (from Ubuntu)
+
+  [ Steven Chamberlain ]
+  * ctdb: Fix detection of gnukfreebsd (Closes: #802621)
 
  -- Mathieu Parent <sathieu@debian.org>  Thu, 31 Mar 2016 22:26:11 +0200
 
