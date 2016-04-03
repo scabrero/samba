@@ -9,7 +9,6 @@ usr/bin/ltdbtool
 usr/bin/onnode
 usr/bin/ping_pong
 usr/bin/smnotify
-usr/lib/*/ctdb/*
 usr/sbin/ctdbd
 usr/sbin/ctdbd_wrapper
 usr/share/man/man1/ctdb.1

@@ -32,14 +32,6 @@ ifneq (,$(filter parallel=%,$(DEB_BUILD_OPTIONS)))
 WAF += -j $(patsubst parallel=%,%,$(filter parallel=%,$(DEB_BUILD_OPTIONS)))
 endif
 
-ctdb_conf_args = \
-		--prefix=/usr \
-		--libdir=/usr/lib/$(DEB_HOST_MULTIARCH) \
-		--sysconfdir=/etc \
-		--localstatedir=/var \
-		--with-socketpath=/var/run/ctdb/ctdbd.socket \
-		--with-logdir=/var/log/ctdb \
-
 conf_args = \
 		--prefix=/usr \
 		--enable-fhs \
@@ -71,30 +63,28 @@ conf_args = \
 		--bundled-libraries=NONE,pytevent,iniparser,roken,wind,hx509,asn1,heimbase,hcrypto,krb5,gssapi,heimntlm,hdb,kdc,com_err,compile_et,asn1_compile \
 		--builtin-libraries=replace,ccan,samba-cluster-support \
 		--minimum-library-version="$(shell ./debian/autodeps.py --minimum-library-version)" \
-		--with-cluster-support
+		--with-cluster-support \
+		--with-socketpath=/var/run/ctdb/ctdbd.socket \
+		--with-logdir=/var/log/ctdb
 
 %:
 	dh $* --with python2 --with systemd
 
 override_dh_auto_configure:
-	cd ctdb; $(shell dpkg-buildflags --export=configure) ./configure $(ctdb_conf_args)
 	$(shell dpkg-buildflags --export=configure) $(WAF) configure \
 		$(conf_args)
 
 override_dh_auto_clean:
 	-$(WAF) clean
-	dh_auto_clean --sourcedirectory=ctdb
 	find . -name "*.pyc" | xargs rm -f
 	rm -rf buildtools/bin/.waf-*
 	rm -rf bin
 	rm -f .lock-wscript
 
 override_dh_auto_install:
-	dh_auto_install --sourcedirectory=ctdb
 	DESTDIR="$(DESTDIR)" $(WAF) install
 
 override_dh_auto_build:
-	dh_auto_build --sourcedirectory=ctdb
 	DESTDIR="$(DESTDIR)" $(WAF)
 
 override_dh_auto_test:
@@ -167,7 +157,6 @@ override_dh_install:
 	rm -f $(DESTDIR)/usr/bin/async_connect_send_test
 	# Remove ctdb dev files
 	rm $(DESTDIR)/usr/include/samba-4.0/ctdb*.h
-	rm $(DESTDIR)/usr/include/ctdb*.h
 	rm $(DESTDIR)/usr/lib/*/pkgconfig/ctdb.pc
 	# Remove ctdb tests
 	rm $(DESTDIR)/usr/bin/ctdb_run_tests
