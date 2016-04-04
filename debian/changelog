@@ -20,7 +20,8 @@ samba (2:4.3.6+dfsg-2) UNRELEASED; urgency=medium
     disabling build options output.
 
   [ Andrew Bartlett ]
-  * Allow to build/run the AD DC provision/dbcheck against talloc 2.1.6
+  * Allow to build/run the AD DC provision/dbcheck against talloc
+    2.1.6 (Closes: #820015)
 
  -- Mathieu Parent <sathieu@debian.org>  Thu, 31 Mar 2016 22:26:11 +0200
 
