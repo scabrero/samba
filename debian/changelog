@@ -1,4 +1,4 @@
-samba (2:4.3.6+dfsg-2) UNRELEASED; urgency=medium
+samba (2:4.3.6+dfsg-2) unstable; urgency=low
 
   [ Mathieu Parent ]
   * Fix FTBFS when built with dpkg-buildpackage -A (Closes: #818146). Patch by
