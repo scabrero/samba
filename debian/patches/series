@@ -16,3 +16,4 @@ fix-cluster-build.diff
 disable-socketwrapper.diff
 ctdb-Fix-detection-of-gnukfreebsd.patch
 no_build_options.patch
+fix-against-talloc-2.1.6.patch

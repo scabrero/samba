@@ -1,0 +1,514 @@
+#
+# These patches are needed because talloc 2.1.6 broke older Samba AD DCs
+# for the provision and dbcheck commands
+#
+From 5f8c97840436a23f483f679f80b7fa781434ded5 Mon Sep 17 00:00:00 2001
+From: Andrew Bartlett <abartlet@samba.org>
+Date: Tue, 22 Sep 2015 15:25:30 +1200
+Subject: [PATCH 1/5] pydsdb: Also accept ldb.MessageElement values to dsdb
+ routines
+
+This shows the correct way to accept a value that may be a list of strings
+or a proper ldb.MessageElement.
+
+Andrew Bartlett
+
+Signed-off-by: Andrew Bartlett <abartlet@samba.org>
+Reviewed-by: Garming Sam <garming@catalyst.net.nz>
+(cherry picked from commit b48776d78b446ad4abd4a6bc2ba6b488a29b11d2)
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=11789
+---
+ python/samba/dbchecker.py |   4 +-
+ source4/dsdb/pydsdb.c     | 113 +++++++++++++++++++++++++---------------------
+ 2 files changed, 63 insertions(+), 54 deletions(-)
+
+diff --git a/python/samba/dbchecker.py b/python/samba/dbchecker.py
+index 4fb9d12..69b4c61 100644
+--- a/python/samba/dbchecker.py
++++ b/python/samba/dbchecker.py
+@@ -1286,8 +1286,8 @@ newSuperior: %s""" % (str(from_dn), str(to_rdn), str(to_base)))
+                 continue
+ 
+             if str(attrname).lower() == 'objectclass':
+-                normalised = self.samdb.dsdb_normalise_attributes(self.samdb_schema, attrname, list(obj[attrname]))
+-                if list(normalised) != list(obj[attrname]):
++                normalised = self.samdb.dsdb_normalise_attributes(self.samdb_schema, attrname, obj[attrname])
++                if normalised != obj[attrname]:
+                     self.err_normalise_mismatch_replace(dn, attrname, list(obj[attrname]))
+                     error_count += 1
+                 continue
+diff --git a/source4/dsdb/pydsdb.c b/source4/dsdb/pydsdb.c
+index 9a3b509..4d38c4a 100644
+--- a/source4/dsdb/pydsdb.c
++++ b/source4/dsdb/pydsdb.c
+@@ -529,11 +529,6 @@ static PyObject *py_dsdb_DsReplicaAttribute(PyObject *self, PyObject *args)
+ 
+ 	PyErr_LDB_OR_RAISE(py_ldb, ldb);
+ 
+-	if (!PyList_Check(el_list)) {
+-		PyErr_Format(PyExc_TypeError, "ldif_elements must be a list");
+-		return NULL;
+-	}
+-
+ 	schema = dsdb_get_schema(ldb, NULL);
+ 	if (!schema) {
+ 		PyErr_SetString(PyExc_RuntimeError, "Failed to find a schema from ldb");
+@@ -555,32 +550,42 @@ static PyObject *py_dsdb_DsReplicaAttribute(PyObject *self, PyObject *args)
+ 		return NULL;
+ 	}
+ 
+-	el = talloc_zero(tmp_ctx, struct ldb_message_element);
+-	if (el == NULL) {
+-		PyErr_NoMemory();
+-		talloc_free(tmp_ctx);
+-		return NULL;
+-	}
+-
+-	el->name = ldap_display_name;
+-	el->num_values = PyList_Size(el_list);
++	/* If we were not given an LdbMessageElement */
++	if (!PyList_Check(el_list)) {
++		if (!py_check_dcerpc_type(el_list, "ldb", "MessageElement")) {
++			PyErr_SetString(py_ldb_get_exception(),
++					"list of strings or ldb MessageElement object required");
++			return NULL;
++		}
++		el = pyldb_MessageElement_AsMessageElement(el_list);
++	} else {
++		el = talloc_zero(tmp_ctx, struct ldb_message_element);
++		if (el == NULL) {
++			PyErr_NoMemory();
++			talloc_free(tmp_ctx);
++			return NULL;
++		}
+ 
+-	el->values = talloc_array(el, struct ldb_val, el->num_values);
+-	if (el->values == NULL) {
+-		PyErr_NoMemory();
+-		talloc_free(tmp_ctx);
+-		return NULL;
+-	}
++		el->name = ldap_display_name;
++		el->num_values = PyList_Size(el_list);
+ 
+-	for (i = 0; i < el->num_values; i++) {
+-		PyObject *item = PyList_GetItem(el_list, i);
+-		if (!PyString_Check(item)) {
+-			PyErr_Format(PyExc_TypeError, "ldif_elements should be strings");
++		el->values = talloc_array(el, struct ldb_val, el->num_values);
++		if (el->values == NULL) {
++			PyErr_NoMemory();
+ 			talloc_free(tmp_ctx);
+ 			return NULL;
+ 		}
+-		el->values[i].data = (uint8_t *)PyString_AsString(item);
+-		el->values[i].length = PyString_Size(item);
++
++		for (i = 0; i < el->num_values; i++) {
++			PyObject *item = PyList_GetItem(el_list, i);
++			if (!PyString_Check(item)) {
++				PyErr_Format(PyExc_TypeError, "ldif_elements should be strings");
++				talloc_free(tmp_ctx);
++				return NULL;
++			}
++			el->values[i].data = (uint8_t *)PyString_AsString(item);
++			el->values[i].length = PyString_Size(item);
++		}
+ 	}
+ 
+ 	attr = talloc_zero(tmp_ctx, struct drsuapi_DsReplicaAttribute);
+@@ -624,11 +629,6 @@ static PyObject *py_dsdb_normalise_attributes(PyObject *self, PyObject *args)
+ 
+ 	PyErr_LDB_OR_RAISE(py_ldb, ldb);
+ 
+-	if (!PyList_Check(el_list)) {
+-		PyErr_Format(PyExc_TypeError, "ldif_elements must be a list");
+-		return NULL;
+-	}
+-
+ 	schema = dsdb_get_schema(ldb, NULL);
+ 	if (!schema) {
+ 		PyErr_SetString(PyExc_RuntimeError, "Failed to find a schema from ldb");
+@@ -650,32 +650,41 @@ static PyObject *py_dsdb_normalise_attributes(PyObject *self, PyObject *args)
+ 		return NULL;
+ 	}
+ 
+-	el = talloc_zero(tmp_ctx, struct ldb_message_element);
+-	if (el == NULL) {
+-		PyErr_NoMemory();
+-		talloc_free(tmp_ctx);
+-		return NULL;
+-	}
+-
+-	el->name = ldap_display_name;
+-	el->num_values = PyList_Size(el_list);
++	if (!PyList_Check(el_list)) {
++		if (!py_check_dcerpc_type(el_list, "ldb", "MessageElement")) {
++			PyErr_SetString(py_ldb_get_exception(),
++					"list of strings or ldb MessageElement object required");
++			return NULL;
++		}
++		el = pyldb_MessageElement_AsMessageElement(el_list);
++	} else {
++		el = talloc_zero(tmp_ctx, struct ldb_message_element);
++		if (el == NULL) {
++			PyErr_NoMemory();
++			talloc_free(tmp_ctx);
++			return NULL;
++		}
+ 
+-	el->values = talloc_array(el, struct ldb_val, el->num_values);
+-	if (el->values == NULL) {
+-		PyErr_NoMemory();
+-		talloc_free(tmp_ctx);
+-		return NULL;
+-	}
++		el->name = ldap_display_name;
++		el->num_values = PyList_Size(el_list);
+ 
+-	for (i = 0; i < el->num_values; i++) {
+-		PyObject *item = PyList_GetItem(el_list, i);
+-		if (!PyString_Check(item)) {
+-			PyErr_Format(PyExc_TypeError, "ldif_elements should be strings");
++		el->values = talloc_array(el, struct ldb_val, el->num_values);
++		if (el->values == NULL) {
++			PyErr_NoMemory();
+ 			talloc_free(tmp_ctx);
+ 			return NULL;
+ 		}
+-		el->values[i].data = (uint8_t *)PyString_AsString(item);
+-		el->values[i].length = PyString_Size(item);
++
++		for (i = 0; i < el->num_values; i++) {
++			PyObject *item = PyList_GetItem(el_list, i);
++			if (!PyString_Check(item)) {
++				PyErr_Format(PyExc_TypeError, "ldif_elements should be strings");
++				talloc_free(tmp_ctx);
++				return NULL;
++			}
++			el->values[i].data = (uint8_t *)PyString_AsString(item);
++			el->values[i].length = PyString_Size(item);
++		}
+ 	}
+ 
+ 	/* Normalise "objectClass" attribute if needed */
+-- 
+2.8.0.rc3
+
+
+From ad2ce58ebd76f0be09b55e9dca1616ce37a1f865 Mon Sep 17 00:00:00 2001
+From: Andrew Bartlett <abartlet@samba.org>
+Date: Tue, 16 Feb 2016 15:15:44 +1300
+Subject: [PATCH 2/5] pydsdb: Fix returning of ldb.MessageElement.
+
+This object is not based on pytalloc_Object and so this causes
+a segfault (later a failure) when the struct definitions diverge.
+We must also not reuse the incoming ldb_message_element as a talloc
+context and overwrite the values, instead we should create a new
+object and return that.
+
+Signed-off-by: Andrew Bartlett <abartlet@samba.org>
+Reviewed-by: Garming Sam <garming@catalyst.net.nz>
+(cherry picked from commit b96b1e88f760c92c7d9bb7e732f72d7e73a68907)
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=11789
+---
+ source4/dsdb/pydsdb.c | 49 +++++++++++++++++++++++++++++++++++++++++++------
+ 1 file changed, 43 insertions(+), 6 deletions(-)
+
+diff --git a/source4/dsdb/pydsdb.c b/source4/dsdb/pydsdb.c
+index 4d38c4a..b7c9d87 100644
+--- a/source4/dsdb/pydsdb.c
++++ b/source4/dsdb/pydsdb.c
+@@ -557,6 +557,11 @@ static PyObject *py_dsdb_DsReplicaAttribute(PyObject *self, PyObject *args)
+ 					"list of strings or ldb MessageElement object required");
+ 			return NULL;
+ 		}
++		/*
++		 * NOTE:
++		 * el may not be a valid talloc context, it
++		 * could be part of an array
++		 */
+ 		el = pyldb_MessageElement_AsMessageElement(el_list);
+ 	} else {
+ 		el = talloc_zero(tmp_ctx, struct ldb_message_element);
+@@ -611,17 +616,20 @@ static PyObject *py_dsdb_DsReplicaAttribute(PyObject *self, PyObject *args)
+  */
+ static PyObject *py_dsdb_normalise_attributes(PyObject *self, PyObject *args)
+ {
+-	PyObject *py_ldb, *el_list, *ret;
++	PyObject *py_ldb, *el_list, *py_ret;
+ 	struct ldb_context *ldb;
+ 	char *ldap_display_name;
+ 	const struct dsdb_attribute *a;
+ 	struct dsdb_schema *schema;
+ 	struct dsdb_syntax_ctx syntax_ctx;
+-	struct ldb_message_element *el;
++	struct ldb_message_element *el, *new_el;
+ 	struct drsuapi_DsReplicaAttribute *attr;
++	PyLdbMessageElementObject *ret;
+ 	TALLOC_CTX *tmp_ctx;
+ 	WERROR werr;
+ 	Py_ssize_t i;
++	PyTypeObject *py_type = NULL;
++	PyObject *module = NULL;
+ 
+ 	if (!PyArg_ParseTuple(args, "OsO", &py_ldb, &ldap_display_name, &el_list)) {
+ 		return NULL;
+@@ -656,6 +664,11 @@ static PyObject *py_dsdb_normalise_attributes(PyObject *self, PyObject *args)
+ 					"list of strings or ldb MessageElement object required");
+ 			return NULL;
+ 		}
++		/*
++		 * NOTE:
++		 * el may not be a valid talloc context, it
++		 * could be part of an array
++		 */
+ 		el = pyldb_MessageElement_AsMessageElement(el_list);
+ 	} else {
+ 		el = talloc_zero(tmp_ctx, struct ldb_message_element);
+@@ -687,10 +700,17 @@ static PyObject *py_dsdb_normalise_attributes(PyObject *self, PyObject *args)
+ 		}
+ 	}
+ 
++	new_el = talloc_zero(tmp_ctx, struct ldb_message_element);
++	if (new_el == NULL) {
++		PyErr_NoMemory();
++		talloc_free(tmp_ctx);
++		return NULL;
++	}
++
+ 	/* Normalise "objectClass" attribute if needed */
+ 	if (ldb_attr_cmp(a->lDAPDisplayName, "objectClass") == 0) {
+ 		int iret;
+-		iret = dsdb_sort_objectClass_attr(ldb, schema, el, tmp_ctx, el);
++		iret = dsdb_sort_objectClass_attr(ldb, schema, el, new_el, new_el);
+ 		if (iret != LDB_SUCCESS) {
+ 			PyErr_SetString(PyExc_RuntimeError, ldb_errstring(ldb));
+ 			talloc_free(tmp_ctx);
+@@ -713,14 +733,31 @@ static PyObject *py_dsdb_normalise_attributes(PyObject *self, PyObject *args)
+ 	PyErr_WERROR_NOT_OK_RAISE(werr);
+ 
+ 	/* now convert back again */
+-	werr = a->syntax->drsuapi_to_ldb(&syntax_ctx, a, attr, el, el);
++	werr = a->syntax->drsuapi_to_ldb(&syntax_ctx, a, attr, new_el, new_el);
+ 	PyErr_WERROR_NOT_OK_RAISE(werr);
+ 
+-	ret = py_return_ndr_struct("ldb", "MessageElement", el, el);
++	module = PyImport_ImportModule("ldb");
++	if (module == NULL) {
++		return NULL;
++	}
++
++	py_type = (PyTypeObject *)PyObject_GetAttrString(module, "MessageElement");
++	if (py_type == NULL) {
++		return NULL;
++	}
++	py_ret = py_type->tp_alloc(py_type, 0);
++	ret = (PyLdbMessageElementObject *)py_ret;
++
++	ret->mem_ctx = talloc_new(NULL);
++	if (talloc_reference(ret->mem_ctx, new_el) == NULL) {
++		PyErr_NoMemory();
++		return NULL;
++	}
++	ret->el = new_el;
+ 
+ 	talloc_free(tmp_ctx);
+ 
+-	return ret;
++	return py_ret;
+ }
+ 
+ 
+-- 
+2.8.0.rc3
+
+
+From 7ff98be2325fadc84799ac5cf57fd49b81f4204d Mon Sep 17 00:00:00 2001
+From: Garming Sam <garming@catalyst.net.nz>
+Date: Tue, 15 Mar 2016 13:29:54 +1300
+Subject: [PATCH 3/5] build: mark explicit dependencies on pytalloc-util
+
+All subsystems that include pytalloc.h need to link against
+pytalloc-util.
+
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=11789
+
+Signed-off-by: Garming Sam <garming@catalyst.net.nz>
+Reviewed-by: Andrew Bartlett <abartlet@samba.org>
+
+Autobuild-User(master): Garming Sam <garming@samba.org>
+Autobuild-Date(master): Tue Mar 15 07:08:16 CET 2016 on sn-devel-144
+
+(similar to commit 7b431eba22444d2e0d872de781a8193dcfa6d252)
+
+Backported to 4.3 by Andrew Bartlett
+---
+ source3/passdb/wscript_build        | 2 +-
+ source3/wscript_build               | 2 +-
+ source4/lib/messaging/wscript_build | 2 +-
+ source4/libcli/wscript_build        | 2 +-
+ source4/libnet/wscript_build        | 2 +-
+ source4/param/wscript_build         | 2 +-
+ 6 files changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/source3/passdb/wscript_build b/source3/passdb/wscript_build
+index 9bbd5ca..105777a 100644
+--- a/source3/passdb/wscript_build
++++ b/source3/passdb/wscript_build
+@@ -43,6 +43,6 @@ bld.SAMBA3_MODULE('pdb_samba_dsdb',
+ bld.SAMBA3_PYTHON('pypassdb',
+                   source='py_passdb.c',
+                   deps='pdb',
+-                  public_deps='samba-util tdb talloc pyrpc_util',
++                  public_deps='samba-util tdb talloc pyrpc_util pytalloc-util',
+                   realname='samba/samba3/passdb.so'
+                   )
+diff --git a/source3/wscript_build b/source3/wscript_build
+index 09da206..228f824 100755
+--- a/source3/wscript_build
++++ b/source3/wscript_build
+@@ -1496,7 +1496,7 @@ bld.SAMBA3_BINARY('vlp',
+ 
+ bld.SAMBA3_PYTHON('pysmbd',
+                   source='smbd/pysmbd.c',
+-                  deps='smbd_base pyrpc_util',
++                  deps='smbd_base pyrpc_util pytalloc-util',
+                   realname='samba/samba3/smbd.so'
+                   )
+ 
+diff --git a/source4/lib/messaging/wscript_build b/source4/lib/messaging/wscript_build
+index adcb2cc..86877af 100644
+--- a/source4/lib/messaging/wscript_build
++++ b/source4/lib/messaging/wscript_build
+@@ -9,7 +9,7 @@ bld.SAMBA_LIBRARY('MESSAGING',
+ 
+ bld.SAMBA_PYTHON('python_messaging',
+ 	source='pymessaging.c',
+-	deps='MESSAGING events pyparam_util',
++	deps='MESSAGING events pyparam_util pytalloc-util',
+ 	realname='samba/messaging.so'
+ 	)
+ 
+diff --git a/source4/libcli/wscript_build b/source4/libcli/wscript_build
+index 59b0bc7..6ac7e19 100755
+--- a/source4/libcli/wscript_build
++++ b/source4/libcli/wscript_build
+@@ -33,7 +33,7 @@ bld.SAMBA_SUBSYSTEM('LIBCLI_SMB_COMPOSITE',
+ 
+ bld.SAMBA_PYTHON('pysmb',
+     source='pysmb.c',
+-    deps='LIBCLI_SMB_COMPOSITE LIBCLI_SMB2 tevent-util pyparam_util',
++    deps='LIBCLI_SMB_COMPOSITE LIBCLI_SMB2 tevent-util pyparam_util pytalloc-util',
+ 	public_deps='cli_composite samba-credentials gensec LIBCLI_RESOLVE tevent param_options',
+     realname='samba/smb.so'
+     )
+diff --git a/source4/libnet/wscript_build b/source4/libnet/wscript_build
+index ed38c40..6cca50d 100644
+--- a/source4/libnet/wscript_build
++++ b/source4/libnet/wscript_build
+@@ -10,7 +10,7 @@ bld.SAMBA_LIBRARY('samba-net',
+ 
+ bld.SAMBA_PYTHON('python_net',
+ 	source='py_net.c',
+-	deps='samba-net pyrpc_util',
++	deps='samba-net pyrpc_util pytalloc-util',
+ 	realname='samba/net.so'
+ 	)
+ 
+diff --git a/source4/param/wscript_build b/source4/param/wscript_build
+index 4585a83..2ad753b 100644
+--- a/source4/param/wscript_build
++++ b/source4/param/wscript_build
+@@ -49,7 +49,7 @@ bld.SAMBA_SUBSYSTEM('param_options',
+ 
+ bld.SAMBA_SUBSYSTEM('pyparam_util',
+ 	source='pyparam_util.c',
+-	deps='LIBPYTHON samba-hostconfig',
++	deps='LIBPYTHON samba-hostconfig pytalloc-util',
+ 	pyext=True,
+ 	)
+ 
+-- 
+2.8.0.rc3
+
+
+From 39152fe71be554caf559ab27287085e0b1d823ec Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?G=C3=BCnther=20Deschner?= <gd@samba.org>
+Date: Mon, 1 Feb 2016 23:11:13 +0100
+Subject: [PATCH 4/5] libsmb/pysmb: add pytalloc-util dependency to fix the
+ build.
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Guenther
+
+Signed-off-by: Guenther Deschner <gd@samba.org>
+Reviewed-by: Michael Adam <obnox@samba.org>
+
+Autobuild-User(master): Günther Deschner <gd@samba.org>
+Autobuild-Date(master): Tue Feb  2 15:49:14 CET 2016 on sn-devel-144
+
+(cherry picked from commit 943e69ca8fd4491004eafbf29ed2ca748b0b7480)
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=11789
+---
+ source3/wscript_build | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/source3/wscript_build b/source3/wscript_build
+index 228f824..a4a0b2d 100755
+--- a/source3/wscript_build
++++ b/source3/wscript_build
+@@ -1502,7 +1502,7 @@ bld.SAMBA3_PYTHON('pysmbd',
+ 
+ bld.SAMBA3_PYTHON('pylibsmb',
+                   source='libsmb/pylibsmb.c',
+-                  deps='smbclient samba-credentials',
++                  deps='smbclient samba-credentials pytalloc-util',
+                   realname='samba/samba3/libsmb_samba_internal.so'
+                   )
+ 
+-- 
+2.8.0.rc3
+
+
+From 827cc6073f857aa6012db6be02ed91af6d10ff53 Mon Sep 17 00:00:00 2001
+From: Stefan Metzmacher <metze@samba.org>
+Date: Tue, 15 Mar 2016 16:59:51 +0100
+Subject: [PATCH 5/5] s3:wscript: pylibsmb depends on pycredentials
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The need for pytalloc-util was based on the fact that
+pycredentials depends on pytalloc-util.
+
+As pylibsmb only used pycredentials and not pytalloc-util directly,
+we should depend on pycredentials.
+
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=11789
+
+Signed-off-by: Stefan Metzmacher <metze@samba.org>
+Reviewed-by: Günther Deschner <gd@samba.org>
+(cherry picked from commit 74ca470739e0128556d8d20010464df07f2f0ac8)
+---
+ source3/wscript_build | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/source3/wscript_build b/source3/wscript_build
+index a4a0b2d..16e47d4 100755
+--- a/source3/wscript_build
++++ b/source3/wscript_build
+@@ -1502,7 +1502,7 @@ bld.SAMBA3_PYTHON('pysmbd',
+ 
+ bld.SAMBA3_PYTHON('pylibsmb',
+                   source='libsmb/pylibsmb.c',
+-                  deps='smbclient samba-credentials pytalloc-util',
++                  deps='smbclient samba-credentials pycredentials',
+                   realname='samba/samba3/libsmb_samba_internal.so'
+                   )
+ 
+-- 
+2.8.0.rc3
+
