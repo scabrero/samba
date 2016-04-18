@@ -24,6 +24,14 @@
 #include "librpc/gen_ndr/ndr_frstrans.h"
 #include "rpc_server/common/common.h"
 
+#define DCESRV_INTERFACE_FRSTRANS_BIND(context, iface) \
+	dcesrv_interface_frstrans_bind(context, iface)
+static NTSTATUS dcesrv_interface_frstrans_bind(
+		struct dcesrv_connection_context *context,
+		const struct dcesrv_interface *iface)
+{
+	return dcesrv_interface_bind_require_privacy(context, iface);
+}
 
 /*
   frstrans_CheckConnectivity
