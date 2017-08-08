@@ -103,6 +103,7 @@ bool dbghdr( int level, const char *location, const char *func);
 #define DBGC_DSDB_TXN_AUDIT_JSON	35
 #define DBGC_DSDB_GROUP_AUDIT	36
 #define DBGC_DSDB_GROUP_AUDIT_JSON	37
+#define DBGC_DFSR		38
 
 /* So you can define DBGC_CLASS before including debug.h */
 #ifndef DBGC_CLASS

@@ -1,0 +1,10 @@
+
+bld.SAMBA_MODULE('service_dfsr',
+	source='dfsr_service.c dfsr_periodic.c',
+	autoproto='dfsr_service_proto.h',
+	subsystem='service',
+	init_function='server_service_dfsr_init',
+	deps='samdb process_model RPC_NDR_FRSTRANS',
+	internal_module=False,
+	enabled=bld.AD_DC_BUILD_IS_ENABLED()
+	)
