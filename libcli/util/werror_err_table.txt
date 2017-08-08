@@ -15735,6 +15735,24 @@ DNS_ERROR_RCODE_BADTIME
 
 DNS signature validity expired.
 
+0x00002342
+
+FRS_ERROR_CONNECTION_INVALID
+
+FRS connection invalid.
+
+0x00002344
+
+FRS_ERROR_CONTENTSET_NOT_FOUND
+
+FRS content set not found.
+
+0x00002375
+
+FRS_ERROR_CONTENTSET_READ_ONLY
+
+FRS content set is read only.
+
 0x0000251D
 
 DNS_INFO_NO_RECORDS
