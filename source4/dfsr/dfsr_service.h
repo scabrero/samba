@@ -24,6 +24,32 @@
 #ifndef _dfsr_SERVICE_H_
 #define _dfsr_SERVICE_H_
 
+#include "librpc/gen_ndr/ndr_frstrans_c.h"
+
+
+struct dfsrsrv_content_set {
+	struct dfsrsrv_content_set *prev, *next;
+
+	struct GUID guid;
+	const char *name;
+	bool enabled;
+	bool read_only;
+
+	/* replication group this content set belongs to */
+	struct dfsrsrv_replication_group *group;
+};
+
+struct dfsrsrv_replication_group {
+	struct dfsrsrv_replication_group *prev, *next;
+
+	struct GUID guid;
+	const char *name;
+	int type;
+
+	/* list of content sets this server is subscribed */
+	struct dfsrsrv_content_set *sets;
+};
+
 struct dfsrsrv_service {
 	/* the whole dfsr service is in one task */
 	struct task_server *task;
@@ -49,6 +75,9 @@ struct dfsrsrv_service {
 		 * the schedules the periodic stuff */
 		struct tevent_timer *te;
 	} periodic;
+
+	/* list of replication groups this server is subscriber */
+	struct dfsrsrv_replication_group *subscriptions;
 };
 
 #include "dfsr/dfsr_service_proto.h"
