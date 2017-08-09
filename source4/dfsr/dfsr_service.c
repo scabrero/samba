@@ -202,6 +202,14 @@ static NTSTATUS dfsrsrv_task_init(struct task_server *task)
 		return status;
 	}
 
+	status = dfsrsrv_sysvol_subscription_check(service);
+	if (!NT_STATUS_IS_OK(status)) {
+		task_server_terminate(task, talloc_asprintf(task,
+			"dfsrsrv: Failed to subscribe to sysvol replication "
+			"group: %s\n", nt_errstr(status)), true);
+		return status;
+	}
+
 	periodic_startup_interval = lpcfg_parm_int(task->lp_ctx, NULL,
 						   "dfsrsrv",
 						   "periodic_startup_interval",
