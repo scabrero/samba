@@ -31,7 +31,16 @@
 
 static NTSTATUS dfsrsrv_periodic_run(struct dfsrsrv_service *service)
 {
+	NTSTATUS status;
+
 	DEBUG(4, ("dfsrsrv: Periodic run\n"));
+
+	status = dfsrsrv_refresh_subscriptions(service);
+	if (!NT_STATUS_IS_OK(status)) {
+		DEBUG(0, ("dfsrsrv: Failed to refresh subscriptions: %s\n",
+			  nt_errstr(status)));
+		return status;
+	}
 
 	return NT_STATUS_OK;
 }
