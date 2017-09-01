@@ -31,6 +31,158 @@
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_DFSR
 
+static NTSTATUS dfsrsrv_refresh_group_topology(
+		TALLOC_CTX *mem_ctx,
+		struct dfsrsrv_service *service,
+		struct dfsrsrv_replication_group *group,
+		struct ldb_dn *member_dn)
+{
+	struct ldb_result *res;
+	int ret, i;
+	static const char *attrs[] = { "objectGuid",
+					"fromServer",
+					"msDFSR-Enabled",
+					NULL };
+	struct GUID_txt_buf txtguid1, txtguid2;
+
+	DBG_INFO("Refreshing replication group {%s} topology\n",
+		 GUID_buf_string(&group->guid, &txtguid1));
+
+	if (group->type == REPLICA_GROUP_TYPE_SYSVOL) {
+		return dfsrsrv_sysvol_refresh_connections(mem_ctx, service,
+				group, member_dn);
+	}
+
+	/* Get connections to other members */
+	ret = ldb_search(service->samdb, mem_ctx, &res, member_dn,
+		LDB_SCOPE_ONELEVEL, attrs, "(objectClass=msDFSR-Connection)");
+	if (ret != LDB_SUCCESS) {
+		DBG_ERR("Failed to search replication group {%s} connections: "
+			"%s\n", GUID_buf_string(&group->guid, &txtguid1),
+			ldb_errstring(service->samdb));
+		return dsdb_ldb_err_to_ntstatus(ret);
+	}
+
+	for (i = 0; i < res->count; i++) {
+		struct ldb_message *msg = res->msgs[i];
+		struct dfsrsrv_connection *c = NULL;
+		struct GUID cnx_guid;
+		struct ldb_result *res2;
+		struct ldb_dn *from_server_dn, *computer_dn;
+		static const char *attrs3[] = { "msDFSR-ComputerReference",
+						NULL };
+		static const char *attrs4[] = { "dnsHostName", NULL };
+
+		cnx_guid = samdb_result_guid(msg, "objectGuid");
+		from_server_dn = ldb_msg_find_attr_as_dn(
+			service->samdb, c, msg, "fromServer");
+		if (from_server_dn == NULL) {
+			return NT_STATUS_NO_MEMORY;
+		}
+
+		ret = ldb_search(service->samdb, mem_ctx, &res2,
+			from_server_dn, LDB_SCOPE_BASE, attrs3,
+			"(objectClass=msDFSR-Member)");
+		if (ret != LDB_SUCCESS) {
+			DBG_ERR("Failed to search replication group {%s} "
+				"connections: %s\n",
+				GUID_buf_string(&group->guid, &txtguid1),
+				ldb_errstring(service->samdb));
+			continue;
+		}
+
+		if (res2->count != 1) {
+			DBG_ERR("Failed to search replication group {%s} "
+				"connections. Member '%s' not found\n",
+				GUID_buf_string(&group->guid, &txtguid1),
+				ldb_dn_get_linearized(from_server_dn));
+			continue;
+		}
+
+		computer_dn = ldb_msg_find_attr_as_dn(service->samdb,
+				mem_ctx, res2->msgs[0],
+				"msDFSR-ComputerReference");
+		if (computer_dn == NULL) {
+			return NT_STATUS_NO_MEMORY;
+		}
+		TALLOC_FREE(res2);
+
+		ret = ldb_search(service->samdb, mem_ctx, &res2,
+			computer_dn, LDB_SCOPE_BASE, attrs4,
+			"(objectClass=Computer)");
+		if (ret != LDB_SUCCESS) {
+			DBG_ERR("Failed to search computer '%s': %s\n",
+				ldb_dn_get_linearized(computer_dn),
+				ldb_errstring(service->samdb));
+			continue;
+		}
+		if (res2->count != 1) {
+			DBG_ERR("Failed to search computer '%s': "
+				"Expected one entry but %d found\n",
+				ldb_dn_get_linearized(computer_dn),
+				res2->count);
+			continue;
+		}
+
+		for (c = group->connections; c; c = c->next) {
+			if (GUID_equal(&c->guid, &cnx_guid)) {
+				break;
+			}
+		}
+
+		if (c == NULL) {
+			const char *hostname;
+			char *binding_string;
+			NTSTATUS status;
+
+			hostname = ldb_msg_find_attr_as_string(
+					res2->msgs[0], "dNSHostName", NULL);
+			if (hostname == NULL) {
+				return NT_STATUS_NO_MEMORY;
+			}
+
+			binding_string = talloc_asprintf(c,
+				"%s@ncacn_ip_tcp:%s[krb5,seal%s]",
+				"5bc1ed07-f5f5-485f-9dfd-6fd0acf9a23c",
+				hostname, DEBUGLVL(10) ? ",print" : "");
+			if (binding_string == NULL) {
+				return NT_STATUS_NO_MEMORY;
+			}
+
+			c = talloc_zero(group, struct dfsrsrv_connection);
+			if (c == NULL) {
+				return NT_STATUS_NO_MEMORY;
+			}
+			c->guid = cnx_guid;
+			c->group = group;
+			status = dcerpc_parse_binding(c, binding_string,
+					&c->binding);
+			if (!NT_STATUS_IS_OK(status)) {
+				DBG_ERR("Failed to parse binding string '%s': "
+					"%s\n", binding_string,
+					nt_errstr(status));
+				TALLOC_FREE(c);
+				continue;
+			}
+
+			DLIST_ADD_END(group->connections, c);
+
+			DBG_INFO("Found new connection {%s} (%s) on "
+				 "replication group {%s}\n",
+				 GUID_buf_string(&c->guid, &txtguid1),
+				 hostname,
+				 GUID_buf_string(&group->guid, &txtguid2));
+		}
+
+		c->enabled = ldb_msg_find_attr_as_bool(msg, "msDFSR-Enabled",
+			false);
+
+		TALLOC_FREE(res2);
+	}
+
+	return NT_STATUS_OK;
+}
+
 static NTSTATUS dfsrsrv_refresh_group_content_sets(
 		TALLOC_CTX *mem_ctx,
 		struct dfsrsrv_service *service,
@@ -259,6 +411,17 @@ NTSTATUS dfsrsrv_refresh_subscriptions(struct dfsrsrv_service *service)
 			struct GUID_txt_buf txtguid;
 			DBG_ERR("Failed to refresh replication group {%s} "
 				"content set subscriptions: %s\n",
+				GUID_buf_string(&s->guid, &txtguid),
+				nt_errstr(status));
+			continue;
+		}
+
+		status = dfsrsrv_refresh_group_topology(tmp_ctx,
+				service, s, member_dn);
+		if (!NT_STATUS_IS_OK(status)) {
+			struct GUID_txt_buf txtguid;
+			DBG_ERR("Failed to refresh replication group {%s} "
+				"topology: %s\n",
 				GUID_buf_string(&s->guid, &txtguid),
 				nt_errstr(status));
 			continue;

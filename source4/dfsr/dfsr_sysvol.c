@@ -28,6 +28,7 @@
 #include "dsdb/samdb/samdb.h"
 #include "param/param.h"
 #include "samba/service.h"
+#include "util/dlinklist.h"
 
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_DFSR
@@ -436,4 +437,143 @@ out:
 	TALLOC_FREE(tmp_ctx);
 
 	return status;
+}
+
+NTSTATUS dfsrsrv_sysvol_refresh_connections(TALLOC_CTX *mem_ctx,
+		struct dfsrsrv_service *service,
+		struct dfsrsrv_replication_group *group,
+		struct ldb_dn *member_dn)
+{
+	struct ldb_result *res;
+	int ret, i;
+	const char* attrs[] = {"objectGUID", "serverReference", NULL};
+	const char* attrs2[] = {"objectGUID", "fromServer", NULL};
+	struct ldb_dn *settings_dn;
+	struct GUID_txt_buf txtguid1, txtguid2;
+
+	/* Get topology member entry */
+	ret = ldb_search(service->samdb, mem_ctx, &res, member_dn,
+		LDB_SCOPE_BASE, attrs, "(objectClass=msDFSR-Member)");
+	if (ret != LDB_SUCCESS) {
+		DBG_ERR("Failed to search replication group {%s} member '%s': "
+			"%s\n", GUID_buf_string(&group->guid, &txtguid1),
+			ldb_dn_get_linearized(member_dn),
+			ldb_errstring(service->samdb));
+		return dsdb_ldb_err_to_ntstatus(ret);
+	}
+	if (res->count != 1) {
+		DBG_ERR("Failed to search replication group {%s} member '%s': "
+			"Expected one entry but %d found\n",
+			GUID_buf_string(&group->guid, &txtguid1),
+			ldb_dn_get_linearized(member_dn), res->count);
+		return NT_STATUS_NOT_FOUND;
+	}
+
+	/* Get serverReference */
+	settings_dn = ldb_msg_find_attr_as_dn(service->samdb, mem_ctx,
+		 res->msgs[0], "serverReference");
+	if (settings_dn == NULL) {
+		return NT_STATUS_NO_MEMORY;
+	}
+
+	ret = ldb_search(service->samdb, mem_ctx, &res, settings_dn,
+				LDB_SCOPE_ONELEVEL, attrs2,
+				"(objectclass=nTDSConnection)");
+	if (ret != LDB_SUCCESS) {
+		DBG_ERR("Failed to search nTDSConnection: %s\n",
+			ldb_errstring(service->samdb));
+		return dsdb_ldb_err_to_ntstatus(ret);
+	}
+
+	for (i = 0; i < res->count; i++) {
+		struct GUID guid;
+		struct ldb_dn *from_server, *from_server_ntds;
+		struct ldb_result *res2;
+		const char* attrs3[] = {"dNSHostName", NULL};
+		struct dfsrsrv_connection *c = NULL;
+
+		guid = samdb_result_guid(res->msgs[i], "objectGUID");
+
+		from_server_ntds = ldb_msg_find_attr_as_dn(service->samdb,
+					mem_ctx, res->msgs[i], "fromServer");
+		if (from_server_ntds == NULL) {
+			return NT_STATUS_NO_MEMORY;
+		}
+
+		from_server = ldb_dn_get_parent(mem_ctx, from_server_ntds);
+		if (from_server == NULL) {
+			return NT_STATUS_NO_MEMORY;
+		}
+
+		ret = ldb_search(service->samdb, mem_ctx, &res2, from_server,
+				 LDB_SCOPE_BASE, attrs3,
+				 "(&(objectclass=server)(dnsHostName=*))");
+		if (ret != LDB_SUCCESS) {
+			DBG_ERR("Failed to search dnsHostName: %s\n",
+				ldb_errstring(service->samdb));
+			continue;
+		}
+
+		if (res2->count != 1) {
+			DBG_ERR("Failed to search dnsHostName: Expected one "
+				"entry buf %d found.\n", res2->count);
+			TALLOC_FREE(res2);
+			continue;
+		}
+
+		for (c = group->connections; c; c = c->next) {
+			if (GUID_equal(&c->guid, &guid)) {
+				break;
+			}
+		}
+
+		if (c == NULL) {
+			const char *hostname;
+			char *binding_string;
+			NTSTATUS status;
+
+			hostname = ldb_msg_find_attr_as_string(
+					res2->msgs[0], "dNSHostName", NULL);
+			if (hostname == NULL) {
+				return NT_STATUS_NO_MEMORY;
+			}
+
+			binding_string = talloc_asprintf(c,
+				"%s@ncacn_ip_tcp:%s[krb5,seal%s]",
+				"5bc1ed07-f5f5-485f-9dfd-6fd0acf9a23c",
+				hostname, DEBUGLVL(10) ? ",print" : "");
+			if (binding_string == NULL) {
+				return NT_STATUS_NO_MEMORY;
+			}
+
+			c = talloc_zero(group, struct dfsrsrv_connection);
+			if (c == NULL) {
+				return NT_STATUS_NO_MEMORY;
+			}
+			c->guid = guid;
+			c->group = group;
+			status = dcerpc_parse_binding(c, binding_string,
+						      &c->binding);
+			if (!NT_STATUS_IS_OK(status)) {
+				DBG_ERR("Failed to parse binding string '%s': "
+					"%s\n", binding_string,
+					nt_errstr(status));
+				TALLOC_FREE(c);
+				continue;
+			}
+
+			DLIST_ADD_END(group->connections, c);
+
+			DBG_INFO("Found new connection {%s} (%s) on "
+				 "replication group {%s}\n",
+				 GUID_buf_string(&c->guid, &txtguid1),
+				 hostname,
+				 GUID_buf_string(&group->guid, &txtguid2));
+		}
+
+		/* Sysvol connections are always enabled */
+		c->enabled = true;
+	}
+
+	return NT_STATUS_OK;
 }

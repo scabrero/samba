@@ -26,6 +26,22 @@
 
 #include "librpc/gen_ndr/ndr_frstrans_c.h"
 
+#define REPLICA_GROUP_TYPE_SYSVOL	1
+
+struct ldb_dn;
+
+struct dfsrsrv_connection {
+	struct dfsrsrv_connection *prev, *next;
+
+	struct GUID guid;
+	bool enabled;
+
+	/* the binding for the outgoing connection */
+	struct dcerpc_binding *binding;
+
+	/* the replication group this connection belongs to */
+	struct dfsrsrv_replication_group *group;
+};
 
 struct dfsrsrv_content_set {
 	struct dfsrsrv_content_set *prev, *next;
@@ -48,6 +64,10 @@ struct dfsrsrv_replication_group {
 
 	/* list of content sets this server is subscribed */
 	struct dfsrsrv_content_set *sets;
+
+	/* list of connections to other members to replicate from
+	 * following the group topology */
+	struct dfsrsrv_connection *connections;
 };
 
 struct dfsrsrv_service {
