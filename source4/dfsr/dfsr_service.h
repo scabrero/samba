@@ -36,6 +36,29 @@ enum dfsr_connection_state {
 	CONNECTION_STATE_POLLING
 };
 
+enum dfsr_session_state {
+	SESSION_STATE_RESTART,
+	SESSION_STATE_IN_SESSION,
+	SESSION_STATE_REQUESTING_VV,
+	SESSION_STATE_POLL_AGAIN,
+	SESSION_STATE_REQUESTING_UPDATES
+};
+
+struct dfsrsrv_session {
+	struct dfsrsrv_session *prev, *next;
+
+	enum dfsr_session_state state;
+
+	/* the connection this session belongs to */
+	struct dfsrsrv_connection *conn;
+
+	/* the content set this session belongs to */
+	struct dfsrsrv_content_set *set;
+
+	/* the tevent request running the session */
+	struct tevent_req *req;
+};
+
 struct dfsrsrv_connection {
 	struct dfsrsrv_connection *prev, *next;
 
@@ -50,6 +73,9 @@ struct dfsrsrv_connection {
 
 	/* the state of this connection */
 	enum dfsr_connection_state state;
+
+	/* the sessions running on this connection */
+	struct dfsrsrv_session *sessions;
 
 	/* the tevent request running the connection */
 	struct tevent_req *req;

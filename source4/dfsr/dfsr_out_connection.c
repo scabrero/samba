@@ -28,6 +28,7 @@
 #include "lib/events/events.h"
 #include "util/tevent_ntstatus.h"
 #include "libcli/composite/composite.h"
+#include "util/dlinklist.h"
 
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_DFSR
@@ -41,6 +42,127 @@ struct dfsrsrv_conn_state {
 	uint32_t flags;
 	struct frstrans_AsyncResponseContext *poll_response;
 };
+
+struct dfsrsrv_session_state {
+	struct dfsrsrv_session *session;
+	struct dfsrsrv_conn_state *conn_ctx;
+};
+
+static void dfsrsrv_establish_session_done(struct tevent_req *subreq);
+static struct tevent_req *dfsrsrv_establish_session_send(
+		TALLOC_CTX *mem_ctx,
+		struct dfsrsrv_conn_state *conn_ctx,
+		struct dfsrsrv_session *session)
+{
+	struct tevent_req *req, *subreq;
+	struct dfsrsrv_session_state *state;
+	struct GUID_txt_buf txtguid1, txtguid2;
+
+	req = tevent_req_create(mem_ctx, &state, struct dfsrsrv_session_state);
+	if (req == NULL) {
+		return NULL;
+	}
+
+	state->session = session;
+	state->conn_ctx = conn_ctx;
+
+	DBG_INFO("Establish DFS-R session for content set {%s} over DFS-R "
+		 "connection {%s}\n",
+		 GUID_buf_string(&session->set->guid, &txtguid1),
+		 GUID_buf_string(&session->conn->guid, &txtguid2));
+
+	subreq = dcerpc_frstrans_EstablishSession_send(
+					state,
+					conn_ctx->service->task->event_ctx,
+					conn_ctx->pipe->binding_handle,
+					session->conn->guid,
+					session->set->guid);
+	if (tevent_req_nomem(subreq, req)) {
+		return tevent_req_post(req,
+				       conn_ctx->service->task->event_ctx);
+	}
+	tevent_req_set_callback(subreq,	dfsrsrv_establish_session_done, req);
+	return req;
+}
+
+static void dfsrsrv_establish_session_done(struct tevent_req *subreq)
+{
+	struct tevent_req *req;
+	struct dfsrsrv_session_state *state;
+	struct dfsrsrv_session *session;
+	struct GUID_txt_buf txtguid1, txtguid2;
+	NTSTATUS status;
+	WERROR result;
+
+	req = tevent_req_callback_data(subreq, struct tevent_req);
+	state = tevent_req_data(req, struct dfsrsrv_session_state);
+	session = state->session;
+
+	status = dcerpc_frstrans_EstablishSession_recv(subreq, state, &result);
+	TALLOC_FREE(subreq);
+
+	if (tevent_req_nterror(req, status)) {
+		DBG_ERR("Failed to establish DFS-R session for content set "
+			"{%s} on connection {%s}: %s\n",
+			GUID_buf_string(&session->set->guid, &txtguid1),
+			GUID_buf_string(&session->conn->guid, &txtguid2),
+			nt_errstr(status));
+		return;
+	}
+
+	if (!W_ERROR_IS_OK(result)) {
+		DBG_ERR("Failed to establish DFS-R session for content set "
+			"{%s} on connection {%s}: %s\n",
+			GUID_buf_string(&session->set->guid, &txtguid1),
+			GUID_buf_string(&session->conn->guid, &txtguid2),
+			win_errstr(result));
+
+		/* [MS-FRS2] 3.3.4.3 Error handling */
+		if (W_ERROR_EQUAL(result, WERR_FRS_ERROR_CONNECTION_INVALID)) {
+			session->conn->state = CONNECTION_STATE_DISCONNECTED;
+			tevent_req_nterror(req, werror_to_ntstatus(result));
+			return;
+		}
+
+		if (W_ERROR_EQUAL(result,
+				  WERR_FRS_ERROR_CONTENTSET_READ_ONLY)) {
+			session->set->read_only = true;
+			tevent_req_nterror(req, werror_to_ntstatus(result));
+			return;
+		}
+
+		if (W_ERROR_GT(result,
+			WERR_RPC_S_INVALID_STRING_BINDING) &&
+			W_ERROR_LT(result, WERR_RPC_S_GRP_ELT_NOT_REMOVED)) {
+			session->conn->state = CONNECTION_STATE_DISCONNECTED;
+			tevent_req_nterror(req, werror_to_ntstatus(result));
+			return;
+		}
+
+		/* Remain on polling state and try again later */
+		session->state = SESSION_STATE_RESTART;
+		return;
+	}
+
+	/* [MS-FRS2] 3.3.4.3 On success transition to InSession
+	 * state */
+	session->state = SESSION_STATE_IN_SESSION;
+}
+
+static void dfsrsrv_session_done(struct tevent_req *req)
+{
+	struct dfsrsrv_session *session;
+	struct GUID_txt_buf txtguid1, txtguid2;
+
+	session = tevent_req_callback_data(req, struct dfsrsrv_session);
+	TALLOC_FREE(req);
+
+	DBG_WARNING("Content set {%s} session on connection {%s} terminated\n",
+		    GUID_buf_string(&session->set->guid, &txtguid1),
+		    GUID_buf_string(&session->conn->guid, &txtguid2));
+
+	session->state = SESSION_STATE_RESTART;
+}
 
 static void dfsrsrv_frstrans_connect_done(struct composite_context *creq);
 static struct tevent_req *dfsrsrv_establish_connection_send(
@@ -124,6 +246,8 @@ static void dfsrsrv_establish_connection_done(struct tevent_req *subreq)
 	WERROR result;
 	uint32_t old_timeout;
 	struct GUID_txt_buf txtguid;
+	struct dfsrsrv_content_set *set;
+	struct dfsrsrv_session *session;
 
 	req = tevent_req_callback_data(subreq, struct tevent_req);
 	state = tevent_req_data(req, struct dfsrsrv_conn_state);
@@ -188,6 +312,33 @@ static void dfsrsrv_establish_connection_done(struct tevent_req *subreq)
 	 * EstablishSession for each content set that is part of this
 	 * connection's replica group */
 	state->conn->state = CONNECTION_STATE_POLLING;
+
+	for (set = state->conn->group->sets; set; set = set->next) {
+		if (set->enabled && !set->read_only) {
+			session = talloc_zero(state->conn,
+					      struct dfsrsrv_session);
+			if (tevent_req_nomem(session, req)) {
+				state->conn->state =
+					CONNECTION_STATE_DISCONNECTED;
+				return;
+			}
+
+			session->state = SESSION_STATE_RESTART;
+			session->conn = state->conn;
+			session->set = set;
+			DLIST_ADD_END(state->conn->sessions, session);
+
+			session->req = dfsrsrv_establish_session_send(session,
+					state, session);
+			if (tevent_req_nomem(subreq, req)) {
+				state->conn->state =
+					CONNECTION_STATE_DISCONNECTED;
+				return;
+			}
+			tevent_req_set_callback(session->req,
+					dfsrsrv_session_done, session);
+		}
+	}
 }
 
 static void dfsrsrv_connection_asyncpoll_done(struct tevent_req *subreq)
@@ -266,10 +417,33 @@ static void dfsrsrv_connection_done(struct tevent_req *req)
 	conn->req = NULL;
 }
 
+static NTSTATUS check_session(struct dfsrsrv_connection *conn,
+			  struct dfsrsrv_session *session)
+{
+	if (session->state == SESSION_STATE_RESTART) {
+		struct dfsrsrv_conn_state *conn_cnx;
+		conn_cnx = tevent_req_data(conn->req,
+				struct dfsrsrv_conn_state);
+
+		session->req = dfsrsrv_establish_session_send(session,
+							      conn_cnx,
+							      session);
+		if (session->req == NULL) {
+			return NT_STATUS_NO_MEMORY;
+		}
+		tevent_req_set_callback(session->req, dfsrsrv_session_done,
+					session);
+	}
+
+	return NT_STATUS_OK;
+}
+
 static NTSTATUS check_connection(struct dfsrsrv_service *service,
 				 struct dfsrsrv_connection *conn)
 {
 	struct GUID_txt_buf txtguid1, txtguid2;
+	struct dfsrsrv_session *session;
+	NTSTATUS status;
 
 	if (!conn->enabled) {
 		DBG_INFO("Connection {%s} on replication group {%s} disabled\n",
@@ -280,6 +454,12 @@ static NTSTATUS check_connection(struct dfsrsrv_service *service,
 	}
 
 	if (conn->state == CONNECTION_STATE_DISCONNECTED) {
+		/* Clear the session list */
+		while ((session = conn->sessions) != NULL) {
+			DLIST_REMOVE(conn->sessions, session);
+			TALLOC_FREE(session);
+		}
+
 		conn->req = dfsrsrv_establish_connection_send(conn, service,
 							      conn);
 		if (conn->req == NULL) {
@@ -287,6 +467,30 @@ static NTSTATUS check_connection(struct dfsrsrv_service *service,
 		}
 		tevent_req_set_callback(conn->req, dfsrsrv_connection_done,
 					conn);
+		return NT_STATUS_OK;
+	}
+
+	for (session = conn->sessions; session; session = session->next) {
+		if (!session->set->enabled) {
+			DBG_INFO("Content set {%s} on replication group {%s} "
+				 "disabled\n",
+				 GUID_buf_string(&session->set->guid,
+						 &txtguid1),
+				 GUID_buf_string(&session->set->group->guid,
+						 &txtguid2));
+			continue;
+		}
+
+		status = check_session(conn, session);
+		if (!NT_STATUS_IS_OK(status)) {
+			DBG_ERR("Failed to run content set {%s} session on "
+				"connection {%s}: %s\n",
+				GUID_buf_string(&session->set->guid,
+						&txtguid1),
+				GUID_buf_string(&session->conn->guid,
+						&txtguid2),
+				nt_errstr(status));
+		}
 	}
 
 	return NT_STATUS_OK;
