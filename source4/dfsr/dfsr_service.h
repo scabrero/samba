@@ -30,6 +30,12 @@
 
 struct ldb_dn;
 
+enum dfsr_connection_state {
+	CONNECTION_STATE_DISCONNECTED,
+	CONNECTION_STATE_CONNECTED,
+	CONNECTION_STATE_POLLING
+};
+
 struct dfsrsrv_connection {
 	struct dfsrsrv_connection *prev, *next;
 
@@ -41,6 +47,12 @@ struct dfsrsrv_connection {
 
 	/* the replication group this connection belongs to */
 	struct dfsrsrv_replication_group *group;
+
+	/* the state of this connection */
+	enum dfsr_connection_state state;
+
+	/* the tevent request running the connection */
+	struct tevent_req *req;
 };
 
 struct dfsrsrv_content_set {

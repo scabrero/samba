@@ -42,6 +42,13 @@ static NTSTATUS dfsrsrv_periodic_run(struct dfsrsrv_service *service)
 		return status;
 	}
 
+	status = dfsrsrv_run_subscriptions(service);
+	if (!NT_STATUS_IS_OK(status)) {
+		DBG_ERR("Failed to run subscriptions: %s\n",
+			nt_errstr(status));
+		return status;
+	}
+
 	return NT_STATUS_OK;
 }
 
