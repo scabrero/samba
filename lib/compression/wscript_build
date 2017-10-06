@@ -4,3 +4,8 @@ bld.SAMBA_SUBSYSTEM('LZXPRESS',
         deps='replace',
 	source='lzxpress.c'
 	)
+
+bld.SAMBA_SUBSYSTEM('LZHUFFXPRESS',
+        deps='replace',
+	source='lzhuff_xpress.c'
+	)
