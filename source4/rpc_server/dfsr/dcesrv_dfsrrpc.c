@@ -114,12 +114,12 @@ static void dcesrv_FRSTRANS_UPDATE_CANCEL(struct dcesrv_call_state *dce_call, TA
 
 
 /*
-  FRSTRANS_RAW_GET_FILE_DATA
+  frstrans_RawGetFileData
 */
-static void dcesrv_FRSTRANS_RAW_GET_FILE_DATA(struct dcesrv_call_state *dce_call, TALLOC_CTX *mem_ctx,
-		       struct FRSTRANS_RAW_GET_FILE_DATA *r)
+static WERROR dcesrv_frstrans_RawGetFileData(struct dcesrv_call_state *dce_call, TALLOC_CTX *mem_ctx,
+		       struct frstrans_RawGetFileData *r)
 {
-	DCESRV_FAULT_VOID(DCERPC_FAULT_OP_RNG_ERROR);
+	DCESRV_FAULT(DCERPC_FAULT_OP_RNG_ERROR);
 }
 
 
