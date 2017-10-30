@@ -157,6 +157,7 @@ static const char *default_classname_table[] = {
 	[DBGC_DSDB_GROUP_AUDIT] =	"dsdb_group_audit",
 	[DBGC_DSDB_GROUP_AUDIT_JSON] =	"dsdb_group_json_audit",
 	[DBGC_DFSR] =			"dfsr",
+	[DBGC_DFSR_MEET] =		"dfsr_meet",
 };
 
 /*

@@ -52,6 +52,7 @@
 #include "locking/leases_db.h"
 #include "smbd/notifyd/notifyd.h"
 #include "smbd/smbd_cleanupd.h"
+#include "smbd/dfsr_meet.h"
 #include "lib/util/sys_rw.h"
 #include "cleanupdb.h"
 #include "g_lock.h"
@@ -84,6 +85,7 @@ struct smbd_parent_context {
 
 	struct server_id cleanupd;
 	struct server_id notifyd;
+	struct server_id dfsr_meet;
 
 	struct tevent_timer *cleanup_te;
 };
@@ -790,6 +792,133 @@ static void cleanupd_started(struct tevent_req *req)
 		DBG_ERR("messaging_send returned %s\n",
 			nt_errstr(status));
 	}
+}
+
+static void dfsr_meet_stopped(struct tevent_req *req)
+{
+	NTSTATUS status;
+
+	status = dfsr_meet_recv(req);
+	TALLOC_FREE(req);
+
+	DBG_WARNING("DFS-R Meet stopped: %s\n", nt_errstr(status));
+}
+
+static bool dfsr_meet_init(struct messaging_context *msg,
+			   bool interactive,
+			   struct server_id *ppid)
+{
+	struct tevent_context *ev = messaging_tevent_context(msg);
+	struct server_id parent_id = messaging_server_id(msg);
+	struct tevent_req *req;
+	pid_t pid;
+	NTSTATUS status;
+	ssize_t rwret;
+	int ret;
+	bool ok;
+	char c;
+	int up_pipe[2];
+
+	if (interactive) {
+		req = dfsr_meet_send(msg, ev, parent_id.pid);
+		*ppid = parent_id;
+		return (req != NULL);
+	}
+
+	ret = pipe(up_pipe);
+	if (ret == -1) {
+		DBG_WARNING("%s: pipe failed: %s\n", __func__, strerror(errno));
+		return false;
+	}
+
+	pid = fork();
+	if (pid == -1) {
+		DBG_WARNING("%s: fork failed: %s\n", __func__, strerror(errno));
+		close(up_pipe[0]);
+		close(up_pipe[1]);
+		return false;
+	}
+
+	if (pid != 0) {
+		close(up_pipe[1]);
+		rwret = sys_read(up_pipe[0], &c, 1);
+		close(up_pipe[0]);
+
+		if (rwret == -1) {
+			DBG_WARNING("sys_read failed: %s\n", strerror(errno));
+			return false;
+		}
+		if (rwret == 0) {
+			DBG_WARNING("%s: DFS-R Meet could not start\n",
+				    __func__);
+			return false;
+		}
+		if (c != 0) {
+			DBG_WARNING("%s: DFS-R Meet returned %d\n",
+				    __func__, (int)c);
+			return false;
+		}
+
+		DBG_DEBUG("Started DFS-R meet pid=%d\n", (int)pid);
+
+		if (am_parent != NULL) {
+			add_child_pid(am_parent, pid);
+		}
+
+		*ppid = pid_to_procid(pid);
+		return true;
+	}
+
+	close(up_pipe[0]);
+
+	status = smbd_reinit_after_fork(msg, ev, true, "dfsr-meet");
+	if (!NT_STATUS_IS_OK(status)) {
+		DBG_WARNING("%s: reinit_after_fork failed: %s\n",
+			    __func__, nt_errstr(status));
+		c = 1;
+		sys_write(up_pipe[1], &c, 1);
+		exit(1);
+	}
+
+	status = init_system_session_info(NULL);
+	if (!NT_STATUS_IS_OK(status)) {
+		DBG_WARNING("%s: failed to setup system user info: %s.\n",
+			    __func__, nt_errstr(status));
+		c = 1;
+		sys_write(up_pipe[1], &c, 1);
+		exit(1);
+	}
+
+	req = dfsr_meet_send(msg, ev, parent_id.pid);
+	if (req == NULL) {
+		DBG_WARNING("%s: dfsr_meet_send failed\n", __func__);
+		exit(1);
+	}
+	tevent_req_set_callback(req, dfsr_meet_stopped, msg);
+
+	c = 0;
+	rwret = sys_write(up_pipe[1], &c, 1);
+	close(up_pipe[1]);
+
+	if (rwret == -1) {
+		DBG_WARNING("%s: sys_write failed: %s\n", __func__,
+			    strerror(errno));
+		exit(1);
+	}
+	if (rwret != 1) {
+		DBG_WARNING("%s: sys_write could not write result\n",
+			    __func__);
+		exit(1);
+	}
+
+	ok = tevent_req_poll(req, ev);
+	if (!ok) {
+		DBG_WARNING("%s: tevent_req_poll returned %s\n",
+			    __func__, strerror(errno));
+		exit(1);
+	}
+
+	exit(0);
 }
 
 static void remove_child_pid(struct smbd_parent_context *parent,
@@ -1982,6 +2111,14 @@ extern void build_options(bool screen);
 		    cmdline_daemon_cfg->interactive,
 		    &parent->cleanupd)) {
 		exit_daemon("Samba cannot init the cleanupd", EACCES);
+	}
+
+	if (lp_server_role() == ROLE_ACTIVE_DIRECTORY_DC) {
+		if (!dfsr_meet_init(msg_ctx,
+				    cmdline_daemon_cfg->interactive,
+				    &parent->dfsr_meet)) {
+			exit_daemon("Samba cannot init DFS-R meet", EACCES);
+		}
 	}
 
 	if (!messaging_parent_dgm_cleanup_init(msg_ctx)) {
