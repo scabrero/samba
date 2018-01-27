@@ -89,6 +89,10 @@ struct dfsrsrv_content_set {
 	bool enabled;
 	bool read_only;
 
+	/* What we know about this content set */
+	struct frstrans_VersionVector *known_vv;
+	uint32_t known_vv_count;
+
 	/* replication group this content set belongs to */
 	struct dfsrsrv_replication_group *group;
 };
@@ -106,6 +110,27 @@ struct dfsrsrv_replication_group {
 	/* list of connections to other members to replicate from
 	 * following the group topology */
 	struct dfsrsrv_connection *connections;
+};
+
+struct dfsrsrv_update {
+	struct dfsrsrv_update *prev, *next;
+	struct frstrans_Update *update;
+
+	struct tevent_req *req;
+};
+
+struct dfsrsrv_vv_queue {
+	struct dfsrsrv_vv_queue *prev, *next;
+
+	struct frstrans_VersionVector *vv;
+	uint32_t vv_count;
+
+	struct dfsrsrv_update *pending_updates;
+	struct dfsrsrv_update *current_update;
+
+	struct dfsrsrv_content_set *set;
+	struct dfsrsrv_connection *conn;
+	struct dcerpc_pipe *pipe;
 };
 
 struct dfsrsrv_service {
@@ -133,6 +158,14 @@ struct dfsrsrv_service {
 		 * the schedules the periodic stuff */
 		struct tevent_timer *te;
 	} periodic;
+
+	struct {
+		/* Current version vector being processed */
+		struct dfsrsrv_vv_queue *current_vv;
+
+		/* List of version vectors pending to be processed */
+		struct dfsrsrv_vv_queue *pending_vv;
+	} process_queue;
 
 	/* list of replication groups this server is subscriber */
 	struct dfsrsrv_replication_group *subscriptions;
