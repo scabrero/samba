@@ -41,11 +41,26 @@ struct dfsrsrv_conn_state {
 	enum frstrans_ProtocolVersion version;
 	uint32_t flags;
 	struct frstrans_AsyncResponseContext *poll_response;
+
+	uint32_t next_sequence_number;
 };
 
 struct dfsrsrv_session_state {
 	struct dfsrsrv_session *session;
 	struct dfsrsrv_conn_state *conn_ctx;
+
+	/* RequestVersionVector */
+	uint32_t sequence_number;
+	enum frstrans_VersionRequestType request_type;
+	enum frstrans_VersionChangeType change_type;
+
+	/* [MS-FRS2] 3.2.4.1.5 The vvGeneration parameter is
+	 * used to control when an AsyncPoll request can be completed
+	 * by the server. The AsyncPoll request must be completed by
+	 * the server when its version vector time stamp supersedes
+	 * the time stamp passed in as the vvGeneration parameter of
+	 * the version vector request. */
+	uint64_t vv_generation;
 };
 
 static void dfsrsrv_establish_session_done(struct tevent_req *subreq);
@@ -85,6 +100,7 @@ static struct tevent_req *dfsrsrv_establish_session_send(
 	return req;
 }
 
+static void dfsrsrv_session_request_vv_done(struct tevent_req *subreq);
 static void dfsrsrv_establish_session_done(struct tevent_req *subreq)
 {
 	struct tevent_req *req;
@@ -145,8 +161,79 @@ static void dfsrsrv_establish_session_done(struct tevent_req *subreq)
 	}
 
 	/* [MS-FRS2] 3.3.4.3 On success transition to InSession
-	 * state */
+	 * state and request the version chain vector */
 	session->state = SESSION_STATE_IN_SESSION;
+
+	/* Assing the request a unique sequence number to identify the
+	 * response when AsyncPoll response arrives */
+	state->sequence_number = state->conn_ctx->next_sequence_number++;
+	state->request_type = FRSTRANS_VERSION_REQUEST_NORNAL_SYNC;
+	state->change_type = FRSTRANS_VERSION_CHANGE_NOTIFY;
+
+	DBG_INFO("Registering version chain vector generation %lu "
+		 "change notification for content set {%s} "
+		 "on connection {%s}\n", state->vv_generation,
+		 GUID_buf_string(&session->set->guid, &txtguid1),
+		 GUID_buf_string(&session->conn->guid, &txtguid2));
+	subreq = dcerpc_frstrans_RequestVersionVector_send(
+				state,
+				state->conn_ctx->service->task->event_ctx,
+				state->conn_ctx->pipe->binding_handle,
+				state->sequence_number,
+				session->conn->guid,
+				session->set->guid,
+				state->request_type,
+				state->change_type,
+				state->vv_generation);
+	if (tevent_req_nomem(subreq, req)) {
+		session->state = SESSION_STATE_RESTART;
+		return;
+	}
+	tevent_req_set_callback(subreq, dfsrsrv_session_request_vv_done, req);
+
+	session->state = SESSION_STATE_REQUESTING_VV;
+}
+
+static void dfsrsrv_session_request_vv_done(struct tevent_req *subreq)
+{
+	struct tevent_req *req;
+	struct dfsrsrv_session_state *state;
+	struct dfsrsrv_session *session;
+	struct GUID_txt_buf txtguid1, txtguid2;
+	NTSTATUS status;
+	WERROR result;
+
+	req = tevent_req_callback_data(subreq, struct tevent_req);
+	state = tevent_req_data(req, struct dfsrsrv_session_state);
+	session = state->session;
+
+	status = dcerpc_frstrans_RequestVersionVector_recv(subreq, state,
+							   &result);
+	TALLOC_FREE(subreq);
+
+	/* [MS-FRS2] 3.3.4.4 Error handling */
+	if (!NT_STATUS_IS_OK(status)) {
+		DBG_ERR("Failed to request version vectors for content set "
+			"{%s} on connection {%s}: %s\n",
+			GUID_buf_string(&session->set->guid, &txtguid1),
+			GUID_buf_string(&session->conn->guid, &txtguid2),
+			nt_errstr(status));
+		session->conn->state = CONNECTION_STATE_DISCONNECTED;
+		tevent_req_nterror(req, status);
+		return;
+	}
+	if (!W_ERROR_IS_OK(result)) {
+		DBG_ERR("Failed to request version vectors for content set "
+			"{%s} on connection {%s}: %s\n",
+			GUID_buf_string(&session->set->guid, &txtguid1),
+			GUID_buf_string(&session->conn->guid, &txtguid2),
+			win_errstr(result));
+		session->conn->state = CONNECTION_STATE_DISCONNECTED;
+		tevent_req_nterror(req, werror_to_ntstatus(result));
+		return;
+	}
+
+	/* Then wait for AsyncPoll completion */
 }
 
 static void dfsrsrv_session_done(struct tevent_req *req)
@@ -341,6 +428,13 @@ static void dfsrsrv_establish_connection_done(struct tevent_req *subreq)
 	}
 }
 
+static void dfsrsrv_session_handle_requesting_vv(
+		struct dfsrsrv_conn_state *conn_state,
+		struct dfsrsrv_session_state *session_state);
+static void dfsrsrv_session_handle_poll_again(
+		struct dfsrsrv_conn_state *conn_state,
+		struct dfsrsrv_session_state *session_state,
+		struct frstrans_AsyncResponseContext *response);
 static void dfsrsrv_connection_asyncpoll_done(struct tevent_req *subreq)
 {
 	struct tevent_req *req;
@@ -349,6 +443,8 @@ static void dfsrsrv_connection_asyncpoll_done(struct tevent_req *subreq)
 	WERROR result;
 	uint32_t old_timeout;
 	struct frstrans_AsyncResponseContext *response;
+	struct dfsrsrv_session *session = NULL;
+	struct dfsrsrv_session_state *session_state = NULL;
 
 	req = tevent_req_callback_data(subreq, struct tevent_req);
 	state = tevent_req_data(req, struct dfsrsrv_conn_state);
@@ -373,7 +469,7 @@ static void dfsrsrv_connection_asyncpoll_done(struct tevent_req *subreq)
 	}
 
 	/* [MS-FRS2] 3.3.4.5 On sucess, register another AsyncPoll callback
-	 * for this connection */
+	 * for this connection. Save the current response for later process */
 	state->poll_response = talloc_zero(state,
 			struct frstrans_AsyncResponseContext);
 	if (tevent_req_nomem(state->poll_response, req)) {
@@ -399,6 +495,158 @@ static void dfsrsrv_connection_asyncpoll_done(struct tevent_req *subreq)
 	}
 	tevent_req_set_callback(subreq, dfsrsrv_connection_asyncpoll_done,
 				req);
+
+	/* Locate the session this response is for */
+	for (session = state->conn->sessions; session;
+			session = session->next) {
+		session_state = tevent_req_data(session->req,
+				struct dfsrsrv_session_state);
+		if (response->sequence_number ==
+				session_state->sequence_number) {
+			break;
+		}
+	}
+
+	if (session == NULL || session_state == NULL) {
+		DBG_ERR("Got an AsyncPoll response (seq num %d) but no "
+			"matching session found\n",
+			response->sequence_number);
+		TALLOC_FREE(response);
+		state->conn->state = CONNECTION_STATE_DISCONNECTED;
+		return;
+	}
+
+	if (session_state->request_type !=
+			FRSTRANS_VERSION_REQUEST_NORNAL_SYNC) {
+		DBG_WARNING("Request type %d not supported\n",
+			    session_state->request_type);
+		TALLOC_FREE(response);
+		state->conn->state = CONNECTION_STATE_DISCONNECTED;
+		return;
+	}
+
+	/* [MS-FRS2] 3.3.4.5 Subsequent process depends on the type of
+	 * version vector request that has triggered this AsyncPoll
+	 * completion */
+
+	if (session->state == SESSION_STATE_REQUESTING_VV) {
+		dfsrsrv_session_handle_requesting_vv(state, session_state);
+	} else if (session->state == SESSION_STATE_POLL_AGAIN) {
+		dfsrsrv_session_handle_poll_again(state, session_state,
+						  response);
+	}
+
+	TALLOC_FREE(response);
+
+	/* [MS-FRS2] 3.3.4.5 If the session state is neither REQUESTING_VV
+	 * nor POLL_AGAIN, ignore this AsyncPoll reply */
+}
+
+static void dfsrsrv_session_handle_requesting_vv(
+		struct dfsrsrv_conn_state *conn_state,
+		struct dfsrsrv_session_state *session_state)
+{
+	struct tevent_req *subreq;
+	struct GUID_txt_buf txtguid1, txtguid2;
+
+	DBG_INFO("Version chain vector changed, generation %lu available for "
+		 "content set {%s} on connection {%s}\n",
+		 session_state->vv_generation,
+		 GUID_buf_string(&session_state->session->set->guid,
+				 &txtguid1),
+		 GUID_buf_string(&session_state->session->conn->guid,
+				 &txtguid2));
+
+	/* [MS-FRS2] 3.3.4.5 The server version vector has changed and
+	 * has versions not known to us. Transition to poll again
+	 * state and request those versions */
+	session_state->session->state = SESSION_STATE_POLL_AGAIN;
+	session_state->request_type = FRSTRANS_VERSION_REQUEST_NORNAL_SYNC;
+	session_state->change_type = FRSTRANS_VERSION_CHANGE_ALL;
+
+	/* Assign the next request a new sequence number to identify
+	 * the AsyncPoll response when it arrives, notifying us a new
+	 * version vector is available */
+	session_state->sequence_number = conn_state->next_sequence_number++;
+
+	DBG_INFO("Requesting version chain vector generation %lu for content "
+		 "set {%s} on connection {%s}\n",
+		 session_state->vv_generation,
+		 GUID_buf_string(&session_state->session->set->guid,
+				 &txtguid1),
+		 GUID_buf_string(&session_state->session->conn->guid,
+				 &txtguid2));
+	subreq = dcerpc_frstrans_RequestVersionVector_send(
+				conn_state,
+				conn_state->service->task->event_ctx,
+				conn_state->pipe->binding_handle,
+				session_state->sequence_number,
+				session_state->session->conn->guid,
+				session_state->session->set->guid,
+				session_state->request_type,
+				session_state->change_type,
+				session_state->vv_generation);
+	if (tevent_req_nomem(subreq, session_state->session->req)) {
+		session_state->session->state = SESSION_STATE_RESTART;
+		return;
+	}
+	tevent_req_set_callback(subreq, dfsrsrv_session_request_vv_done,
+				session_state->session->req);
+
+	session_state->session->state = SESSION_STATE_POLL_AGAIN;
+}
+
+static void dfsrsrv_session_handle_poll_again(
+		struct dfsrsrv_conn_state *conn_state,
+		struct dfsrsrv_session_state *session_state,
+		struct frstrans_AsyncResponseContext *response)
+{
+	struct tevent_req *subreq;
+	struct GUID_txt_buf txtguid1, txtguid2;
+
+	/* Save received generation as the poll response is shared
+	 * among sessions. Will be used later to register the change
+	 * notification */
+	session_state->vv_generation = response->response.vv_generation;
+
+	/* Request to be notified again when a new version vector is
+	 * available */
+	session_state->request_type = FRSTRANS_VERSION_REQUEST_NORNAL_SYNC;
+	session_state->change_type = FRSTRANS_VERSION_CHANGE_NOTIFY;
+
+	/* Assign the next request a new sequence number to identify
+	 * the AsyncPoll response when it arrives, notifying us a new
+	 * version vector is available */
+	session_state->sequence_number = conn_state->next_sequence_number++;
+
+	DBG_INFO("Registering version chain vector generation %lu change "
+		 "notification for content set {%s} on connection {%s}\n",
+		 session_state->vv_generation,
+		 GUID_buf_string(&session_state->session->set->guid,
+				 &txtguid1),
+		 GUID_buf_string(&session_state->session->conn->guid,
+				 &txtguid2));
+
+	subreq = dcerpc_frstrans_RequestVersionVector_send(
+			session_state,
+			session_state->conn_ctx->service->task->event_ctx,
+			session_state->conn_ctx->pipe->binding_handle,
+			session_state->sequence_number,
+			session_state->session->conn->guid,
+			session_state->session->set->guid,
+			session_state->request_type,
+			session_state->change_type,
+			session_state->vv_generation);
+	if (tevent_req_nomem(subreq, session_state->session->req)) {
+		session_state->session->state = SESSION_STATE_RESTART;
+		return;
+	}
+	tevent_req_set_callback(subreq, dfsrsrv_session_request_vv_done,
+				session_state->session->req);
+
+	/* Transition to requesting version vector state and wait for
+	 * AsyncPoll completion */
+	session_state->session->state = SESSION_STATE_REQUESTING_VV;
 }
 
 static void dfsrsrv_connection_done(struct tevent_req *req)
