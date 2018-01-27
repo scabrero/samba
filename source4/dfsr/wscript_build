@@ -3,6 +3,7 @@ bld.SAMBA_MODULE('service_dfsr',
 	source='''dfsr_service.c
 		  dfsr_periodic.c
 		  dfsr_sysvol.c
+                  dfsr_util.c
 		  dfsr_subscriptions.c
                   dfsr_out_connection.c''',
 	autoproto='dfsr_service_proto.h',

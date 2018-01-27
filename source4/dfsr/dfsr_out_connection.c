@@ -61,7 +61,335 @@ struct dfsrsrv_session_state {
 	 * the time stamp passed in as the vvGeneration parameter of
 	 * the version vector request. */
 	uint64_t vv_generation;
+
+	/* Computed delta between the received version chain vector and the
+	 * already known version chain vector */
+	struct frstrans_VersionVector *vv_delta;
+	uint32_t vv_delta_count;
 };
+
+struct dfsrsrv_request_updates_state {
+	struct dfsrsrv_service *service;
+	struct dcerpc_pipe *pipe;
+	struct dfsrsrv_connection *conn;
+	struct dfsrsrv_content_set *set;
+
+	uint32_t max_updates;
+	uint32_t num_updates;
+	uint32_t hash_requested;
+	enum frstrans_UpdateRequestType update_request_type;
+	struct frstrans_VersionVector *request_vv_delta;
+	uint32_t request_vv_delta_count;
+
+	enum frstrans_UpdateStatus update_status;
+	struct frstrans_Update *updates;
+	struct GUID gvsn_db_guid;
+	uint64_t gvsn_version;
+
+	/* A queue for the updates */
+	struct dfsrsrv_vv_queue *queue;
+};
+
+static void dfsrsrv_session_request_updates_next(struct tevent_req *subreq);
+static struct tevent_req *dfsrsrv_session_request_updates_send(
+		TALLOC_CTX *mem_ctx,
+		struct dfsrsrv_service *service,
+		struct dcerpc_pipe *pipe,
+		struct dfsrsrv_connection *conn,
+		struct dfsrsrv_content_set *set,
+		struct frstrans_VersionVector *vv,
+		uint32_t vv_count)
+{
+	struct tevent_req *req, *subreq;
+	struct dfsrsrv_request_updates_state *state;
+	NTSTATUS status;
+	struct GUID_txt_buf txtguid1, txtguid2;
+	int i;
+
+	req = tevent_req_create(mem_ctx, &state,
+			struct dfsrsrv_request_updates_state);
+	if (req == NULL) {
+		return NULL;
+	}
+
+	state->service = service;
+	state->pipe = pipe;
+	state->conn = conn;
+	state->set = set;
+	state->num_updates = 0;
+	state->max_updates = 256;
+	state->hash_requested = 0;
+	state->update_request_type = FRSTRANS_UPDATE_REQUEST_ALL;
+
+	/* Copy the vectors as they will be freed if all updates do not fit
+	 * in the max_updates */
+	status = dfsrsrv_vv_copy(state, vv, &state->request_vv_delta,
+				 vv_count);
+	if (tevent_req_nterror(req, status)) {
+		return tevent_req_post(req, service->task->event_ctx);
+	}
+	state->request_vv_delta_count = vv_count;
+
+	/* The queue for the updates pertaining to this version vector */
+	state->queue = talloc_zero(service, struct dfsrsrv_vv_queue);
+	if (tevent_req_nomem(state->queue, req)) {
+		return tevent_req_post(req, service->task->event_ctx);
+	}
+	state->queue->set = set;
+	state->queue->conn = conn;
+	state->queue->pipe = pipe;
+
+	state->updates = talloc_zero_array(state,
+					   struct frstrans_Update,
+					   state->max_updates);
+	if (tevent_req_nomem(state->updates, req)) {
+		return tevent_req_post(req, service->task->event_ctx);
+	}
+
+	/* Save the original version chain vector as it will be needed to
+	   go through the request updates state machine and to update the
+	   persisted known version chain vector in database when all updates
+	   pertaining to this chain are processed */
+	status = dfsrsrv_vv_copy(state->queue, vv, &state->queue->vv,
+				 vv_count);
+	if (tevent_req_nterror(req, status)) {
+		return tevent_req_post(req, service->task->event_ctx);
+	}
+	state->queue->vv_count = vv_count;
+
+	DBG_INFO("Requesting updates [type %d] for content set "
+		 "{%s} on connection {%s}:\n", state->update_request_type,
+		 GUID_buf_string(&state->set->guid, &txtguid1),
+		 GUID_buf_string(&state->conn->guid, &txtguid2));
+	for (i = 0; i < state->request_vv_delta_count; i++) {
+		DBG_INFO("         {%s} [%lu - %lu]\n",
+			 GUID_buf_string(&state->request_vv_delta[i].db_guid,
+					 &txtguid1),
+			 state->request_vv_delta[i].low,
+			 state->request_vv_delta[i].high);
+	}
+
+	subreq = dcerpc_frstrans_RequestUpdates_send(
+					state,
+					state->service->task->event_ctx,
+					state->pipe->binding_handle,
+					state->conn->guid,
+					state->set->guid,
+					state->max_updates,
+					state->hash_requested,
+					state->update_request_type,
+					state->request_vv_delta_count,
+					state->request_vv_delta,
+					state->updates,
+					&state->num_updates,
+					&state->update_status,
+					&state->gvsn_db_guid,
+					&state->gvsn_version);
+	if (tevent_req_nomem(subreq, req)) {
+		return tevent_req_post(req, service->task->event_ctx);
+	}
+	tevent_req_set_callback(subreq, dfsrsrv_session_request_updates_next,
+				req);
+
+	return req;
+}
+
+static void dfsrsrv_session_request_updates_next(struct tevent_req *subreq)
+{
+	struct tevent_req *req;
+	struct dfsrsrv_request_updates_state *state;
+	struct frstrans_VersionVector *new_vv;
+	uint32_t new_vv_count;
+	NTSTATUS status;
+	WERROR result;
+	int i;
+	struct GUID_txt_buf txtguid1, txtguid2, txtguid3;
+
+	req = tevent_req_callback_data(subreq, struct tevent_req);
+	state = tevent_req_data(req, struct dfsrsrv_request_updates_state);
+	status = dcerpc_frstrans_RequestUpdates_recv(subreq, state, &result);
+	TALLOC_FREE(subreq);
+
+	if (tevent_req_nterror(req, status)) {
+		DBG_ERR("Failed to request updates: %s\n", nt_errstr(status));
+		return;
+	}
+
+	if (!W_ERROR_IS_OK(result)) {
+		DBG_ERR("Failed to request updates: %s\n", win_errstr(result));
+		tevent_req_nterror(req, werror_to_ntstatus(result));
+		return;
+	}
+
+	/* [MS-FRS2] 3.3.4.6 Upon completion, the server has returned at
+	 * least some of the requested updates. The client must queue received
+	 * updates and process them as specified in section 3.3.4.6.2 */
+	for (i = 0; i < state->num_updates; i++) {
+		struct dfsrsrv_update *entry;
+
+		entry = talloc_zero(state->queue, struct dfsrsrv_update);
+		if (tevent_req_nomem(entry, req)) {
+			return;
+		}
+
+		entry->update = talloc_memdup(entry, &state->updates[i],
+					      sizeof(struct frstrans_Update));
+		entry->update->name = talloc_strdup(entry->update,
+						    state->updates[i].name);
+		DLIST_ADD_END(state->queue->pending_updates, entry);
+
+		DBG_INFO("Queued update {%s}-v%lu (%s) "
+			 "(Content set {%s}, Connection {%s})\n",
+			 GUID_buf_string(&entry->update->gsvn_db_guid,
+					 &txtguid1),
+			 entry->update->gsvn_version, entry->update->name,
+			 GUID_buf_string(&state->set->guid, &txtguid2),
+			 GUID_buf_string(&state->conn->guid, &txtguid3));
+	}
+	TALLOC_FREE(state->updates);
+
+	/* [MS-FRS2] 3.3.4.6.1 Requesting updates state machine */
+	switch (state->update_request_type) {
+	case FRSTRANS_UPDATE_REQUEST_ALL:
+	{
+		if (state->update_status == FRSTRANS_UPDATE_STATUS_DONE) {
+			goto done;
+		} else if (state->update_status == FRSTRANS_UPDATE_STATUS_MORE) {
+			state->update_request_type = FRSTRANS_UPDATE_REQUEST_TOMBSTONES;
+			goto filter_and_request_more;
+		}
+		break;
+	}
+	case FRSTRANS_UPDATE_REQUEST_TOMBSTONES:
+	{
+		if (state->update_status == FRSTRANS_UPDATE_STATUS_DONE) {
+			state->update_request_type = FRSTRANS_UPDATE_REQUEST_LIVE;
+			TALLOC_FREE(state->request_vv_delta);
+
+			/* Restore the original VV delta saved in the queue */
+			status = dfsrsrv_vv_copy(state, state->queue->vv,
+					&state->request_vv_delta,
+					state->queue->vv_count);
+			if (tevent_req_nterror(req, status)) {
+				return;
+			}
+			state->request_vv_delta_count = state->queue->vv_count;
+			goto request_more;
+		} else if (state->update_status == FRSTRANS_UPDATE_STATUS_MORE) {
+			/* The request type remains UPDATE_REQUEST_TOMSTONES */
+			goto filter_and_request_more;
+		}
+		break;
+	}
+	case FRSTRANS_UPDATE_REQUEST_LIVE:
+	{
+		if (state->update_status == FRSTRANS_UPDATE_STATUS_DONE) {
+			goto done;
+		} else if (state->update_status == FRSTRANS_UPDATE_STATUS_MORE) {
+			/* The request type remains UPDATE_REQUEST_LIVE */
+			goto filter_and_request_more;
+		}
+	}
+	}
+
+filter_and_request_more:
+	/*
+	 * Remove all entries from the version chain vector that
+	 * are lexicographically less than or equal to
+	 * (gvsnDbGuid, gvsnVersion)
+	 */
+	status = dfsrsrv_lexicofilter_vector(state,
+			state->gvsn_db_guid, state->gvsn_version,
+			state->request_vv_delta,
+			state->request_vv_delta_count,
+			&new_vv, &new_vv_count);
+	if (tevent_req_nterror(req, status)) {
+		DBG_ERR("Failed to filter version vectors: %s\n",
+			nt_errstr(status));
+		return;
+	}
+	TALLOC_FREE(state->request_vv_delta);
+	state->request_vv_delta = new_vv;
+	state->request_vv_delta_count = new_vv_count;
+
+request_more:
+	/* Request more */
+	state->updates = talloc_zero_array(state,
+					   struct frstrans_Update,
+					   state->max_updates);
+	if (tevent_req_nomem(state->updates, req)) {
+		return;
+	}
+
+	DBG_INFO("Requesting updates [type %d] for content set {%s} on "
+		 "connection {%s}:\n", state->update_request_type,
+		 GUID_buf_string(&state->set->guid, &txtguid1),
+		 GUID_buf_string(&state->conn->guid, &txtguid2));
+	for (i = 0; i < state->request_vv_delta_count; i++) {
+		DBG_INFO("         {%s} [%lu - %lu]\n",
+			 GUID_buf_string(&state->request_vv_delta[i].db_guid,
+					 &txtguid1),
+			 state->request_vv_delta[i].low,
+			 state->request_vv_delta[i].high);
+	}
+
+	subreq = dcerpc_frstrans_RequestUpdates_send(
+			state,
+			state->service->task->event_ctx,
+			state->pipe->binding_handle,
+			state->conn->guid,
+			state->set->guid,
+			state->max_updates,
+			state->hash_requested,
+			state->update_request_type,
+			state->request_vv_delta_count,
+			state->request_vv_delta,
+			state->updates,
+			&state->num_updates,
+			&state->update_status,
+			&state->gvsn_db_guid,
+			&state->gvsn_version);
+	if (tevent_req_nomem(subreq, req)) {
+		return;
+	}
+	tevent_req_set_callback(subreq, dfsrsrv_session_request_updates_next,
+				req);
+	return;
+
+done:
+	/* Update the runtime known version chain vector for the content set*/
+	status = dfsrsrv_update_known_vv(state->set, state->queue->vv,
+			state->queue->vv_count);
+	if (tevent_req_nterror(req, status)) {
+		DBG_ERR("Failed to update known version vectors: %s\n",
+			nt_errstr(status));
+		return;
+	}
+
+	/* Append to the version vectors queue */
+	DLIST_ADD_END(state->service->process_queue.pending_vv, state->queue);
+	DBG_INFO("Queued version chain vector (Content set {%s}, "
+		 "Connection {%s}) for processing\n",
+		 GUID_buf_string(&state->queue->set->guid, &txtguid1),
+		 GUID_buf_string(&state->queue->conn->guid, &txtguid2));
+
+	/* [MS-FRS2] 3.3.4.6.1 All updates from the original
+	 * version chain vector have been received. */
+	tevent_req_done(req);
+}
+
+static NTSTATUS dfsrsrv_session_request_updates_recv(struct tevent_req *req)
+{
+	NTSTATUS status;
+
+	if (tevent_req_is_nterror(req, &status)) {
+		tevent_req_received(req);
+		return status;
+	}
+
+	tevent_req_received(req);
+	return NT_STATUS_OK;
+}
 
 static void dfsrsrv_establish_session_done(struct tevent_req *subreq);
 static struct tevent_req *dfsrsrv_establish_session_send(
@@ -596,6 +924,7 @@ static void dfsrsrv_session_handle_requesting_vv(
 	session_state->session->state = SESSION_STATE_POLL_AGAIN;
 }
 
+static void dfsrsrv_session_request_updates_done(struct tevent_req *subreq);
 static void dfsrsrv_session_handle_poll_again(
 		struct dfsrsrv_conn_state *conn_state,
 		struct dfsrsrv_session_state *session_state,
@@ -603,31 +932,90 @@ static void dfsrsrv_session_handle_poll_again(
 {
 	struct tevent_req *subreq;
 	struct GUID_txt_buf txtguid1, txtguid2;
+	NTSTATUS status;
+	int i;
+
+	/* [MS-FRS2] 3.3.4.5 The server has sent its version chain vector */
+	DBG_INFO("Received version chain vector generation "
+		 "%lu for content set {%s} on connection {%s}:\n",
+		 session_state->vv_generation,
+		 GUID_buf_string(&session_state->session->set->guid,
+				 &txtguid1),
+		 GUID_buf_string(&session_state->session->conn->guid,
+				 &txtguid2));
+	for (i = 0; i < response->response.version_vector_count; i++) {
+		DBG_INFO("         {%s} [%lu - %lu]\n",
+			 GUID_buf_string(
+				 &response->response.version_vector[i].db_guid,
+				 &txtguid1),
+			 response->response.version_vector[i].low,
+			 response->response.version_vector[i].high);
+	}
+
+	/* Calculate the delta between what we know and the server
+	 * has sent. Store in the session state */
+	TALLOC_FREE(session_state->vv_delta);
+	session_state->vv_delta_count = 0;
+
+	status = dfsrsrv_calculate_delta_vectors(session_state,
+		response->response.version_vector,
+		response->response.version_vector_count,
+		&session_state->vv_delta,
+		&session_state->vv_delta_count,
+		session_state->session->set->known_vv,
+		session_state->session->set->known_vv_count);
+	if (tevent_req_nterror(session_state->session->req, status)) {
+		DBG_ERR("Failed to compute version vector delta for "
+			"content set {%s} on connection {%s}: %s\n",
+			GUID_buf_string(&session_state->session->set->guid,
+					&txtguid1),
+			GUID_buf_string(&session_state->session->conn->guid,
+					&txtguid2),
+			nt_errstr(status));
+		session_state->session->state = SESSION_STATE_RESTART;
+	}
+
+	DBG_INFO("Computed version vector delta for content set {%s}"
+		 " on connection {%s}:\n",
+		 GUID_buf_string(&session_state->session->set->guid,
+				 &txtguid1),
+		 GUID_buf_string(&session_state->session->conn->guid,
+				 &txtguid2));
+	for (i = 0; i < session_state->vv_delta_count; i++) {
+		DBG_INFO("         {%s} [%lu - %lu]\n",
+			 GUID_buf_string(&session_state->vv_delta[i].db_guid,
+					 &txtguid1),
+			 session_state->vv_delta[i].low,
+			 session_state->vv_delta[i].high);
+	}
 
 	/* Save received generation as the poll response is shared
 	 * among sessions. Will be used later to register the change
 	 * notification */
 	session_state->vv_generation = response->response.vv_generation;
 
-	/* Request to be notified again when a new version vector is
-	 * available */
-	session_state->request_type = FRSTRANS_VERSION_REQUEST_NORNAL_SYNC;
-	session_state->change_type = FRSTRANS_VERSION_CHANGE_NOTIFY;
-
 	/* Assign the next request a new sequence number to identify
 	 * the AsyncPoll response when it arrives, notifying us a new
 	 * version vector is available */
 	session_state->sequence_number = conn_state->next_sequence_number++;
 
-	DBG_INFO("Registering version chain vector generation %lu change "
-		 "notification for content set {%s} on connection {%s}\n",
-		 session_state->vv_generation,
-		 GUID_buf_string(&session_state->session->set->guid,
-				 &txtguid1),
-		 GUID_buf_string(&session_state->session->conn->guid,
-				 &txtguid2));
+	/* If already know everything (empty delta), register a new
+	 * change notification and wait */
+	if (session_state->vv_delta_count == 0) {
+		session_state->request_type =
+				FRSTRANS_VERSION_REQUEST_NORNAL_SYNC;
+		session_state->change_type = FRSTRANS_VERSION_CHANGE_NOTIFY;
 
-	subreq = dcerpc_frstrans_RequestVersionVector_send(
+		DBG_INFO("Registering version chain vector generation %lu "
+			 "change notification for content set {%s} on "
+			 "connection {%s}\n",
+			 session_state->vv_generation,
+			 GUID_buf_string(&session_state->session->set->guid,
+					 &txtguid1),
+			 GUID_buf_string(&session_state->session->conn->guid,
+					 &txtguid2));
+
+		subreq = dcerpc_frstrans_RequestVersionVector_send(
 			session_state,
 			session_state->conn_ctx->service->task->event_ctx,
 			session_state->conn_ctx->pipe->binding_handle,
@@ -637,16 +1025,95 @@ static void dfsrsrv_session_handle_poll_again(
 			session_state->request_type,
 			session_state->change_type,
 			session_state->vv_generation);
-	if (tevent_req_nomem(subreq, session_state->session->req)) {
-		session_state->session->state = SESSION_STATE_RESTART;
+		if (tevent_req_nomem(subreq, session_state->session->req)) {
+			session_state->session->state = SESSION_STATE_RESTART;
+			return;
+		}
+		tevent_req_set_callback(subreq,
+					dfsrsrv_session_request_vv_done,
+					session_state->session->req);
+
+		session_state->session->state = SESSION_STATE_REQUESTING_VV;
 		return;
 	}
-	tevent_req_set_callback(subreq, dfsrsrv_session_request_vv_done,
-				session_state->session->req);
 
-	/* Transition to requesting version vector state and wait for
-	 * AsyncPoll completion */
-	session_state->session->state = SESSION_STATE_REQUESTING_VV;
+	/* There VV delta contain updates not known to us. Enter in
+	 * REQUESTING_UPDATES state and request the updates in the
+	 * computed delta */
+	subreq = dfsrsrv_session_request_updates_send(
+			session_state,
+			conn_state->service,
+			conn_state->pipe,
+			session_state->session->conn,
+			session_state->session->set,
+			session_state->vv_delta,
+			session_state->vv_delta_count);
+	if (tevent_req_nomem(subreq, session_state->session->req)) {
+		session_state->session->state = SESSION_STATE_RESTART;
+		tevent_req_done(session_state->session->req);
+		return;
+	}
+	tevent_req_set_callback(subreq,
+				dfsrsrv_session_request_updates_done,
+				session_state->session->req);
+	session_state->session->state = SESSION_STATE_REQUESTING_UPDATES;
+}
+
+static void dfsrsrv_session_request_updates_done(struct tevent_req *subreq)
+{
+	struct tevent_req *req;
+	struct dfsrsrv_session_state *state;
+	NTSTATUS status;
+	struct GUID_txt_buf txtguid1, txtguid2;
+
+	req = tevent_req_callback_data(subreq, struct tevent_req);
+	state = tevent_req_data(req, struct dfsrsrv_session_state);
+	status = dfsrsrv_session_request_updates_recv(subreq);
+	TALLOC_FREE(subreq);
+
+	TALLOC_FREE(state->vv_delta);
+	state->vv_delta_count = 0;
+
+	if (tevent_req_nterror(req, status)) {
+		DBG_ERR("Failed to request updates: %s\n", nt_errstr(status));
+		state->session->state = SESSION_STATE_RESTART;
+		return;
+	}
+
+	/* All updates from the requested version vector obtained. Request to
+	 * be notified when a new version vector is available */
+	state->request_type = FRSTRANS_VERSION_REQUEST_NORNAL_SYNC;
+	state->change_type = FRSTRANS_VERSION_CHANGE_NOTIFY;
+
+	/* Assign the next request a new sequence number to identify the
+	 * AsyncPoll response when it arrives, notifying us a new version
+	 * vector is available */
+	state->sequence_number = state->conn_ctx->next_sequence_number++;
+
+	DBG_INFO("dfsrsrv: Registering version chain vector "
+		 "generation %lu change notification for content "
+		 "set {%s} on connection {%s}\n",
+		 state->vv_generation,
+		 GUID_buf_string(&state->session->set->guid, &txtguid1),
+		 GUID_buf_string(&state->session->conn->guid, &txtguid2));
+
+	subreq = dcerpc_frstrans_RequestVersionVector_send(
+				state,
+				state->conn_ctx->service->task->event_ctx,
+				state->conn_ctx->pipe->binding_handle,
+				state->sequence_number,
+				state->session->conn->guid,
+				state->session->set->guid,
+				state->request_type,
+				state->change_type,
+				state->vv_generation);
+	if (tevent_req_nomem(subreq, req)) {
+		state->session->state = SESSION_STATE_RESTART;
+		return;
+	}
+	tevent_req_set_callback(subreq, dfsrsrv_session_request_vv_done, req);
+
+	state->session->state = SESSION_STATE_REQUESTING_VV;
 }
 
 static void dfsrsrv_connection_done(struct tevent_req *req)
