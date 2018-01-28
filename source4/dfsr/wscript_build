@@ -4,8 +4,10 @@ bld.SAMBA_MODULE('service_dfsr',
 		  dfsr_periodic.c
 		  dfsr_sysvol.c
                   dfsr_util.c
+                  dfsr_staging.c
 		  dfsr_subscriptions.c
-                  dfsr_out_connection.c''',
+                  dfsr_out_connection.c
+                  dfsr_out_process.c''',
 	autoproto='dfsr_service_proto.h',
 	subsystem='service',
 	init_function='server_service_dfsr_init',

@@ -227,6 +227,15 @@ static NTSTATUS dfsrsrv_task_init(struct task_server *task)
 		return status;
 	}
 
+	service->pending.im = tevent_create_immediate(service);
+	if (service->pending.im == NULL) {
+		task_server_terminate(task,
+				      "dfsrsrv: Failed to create immediate "
+				      "task for processing updates\n",
+				      true);
+		return NT_STATUS_NO_MEMORY;
+	}
+
 	return NT_STATUS_OK;
 }
 

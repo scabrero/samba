@@ -373,6 +373,12 @@ done:
 		 GUID_buf_string(&state->queue->set->guid, &txtguid1),
 		 GUID_buf_string(&state->queue->conn->guid, &txtguid2));
 
+	/* Schedule an immediate event to process received updates */
+	tevent_schedule_immediate(state->service->pending.im,
+				  state->service->task->event_ctx,
+				  dfsrsrv_process_updates_handler_im,
+				  state->service);
+
 	/* [MS-FRS2] 3.3.4.6.1 All updates from the original
 	 * version chain vector have been received. */
 	tevent_req_done(req);
