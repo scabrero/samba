@@ -226,6 +226,15 @@ static void dfsrsrv_task_init(struct task_server *task)
 			nt_errstr(status)), true);
 		return;
 	}
+
+	service->pending.im = tevent_create_immediate(service);
+	if (service->pending.im == NULL) {
+		task_server_terminate(task,
+				      "dfsrsrv: Failed to create immediate "
+				      "task for processing updates\n",
+				      true);
+		return;
+	}
 }
 
 /*

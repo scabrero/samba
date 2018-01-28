@@ -49,6 +49,13 @@ static NTSTATUS dfsrsrv_periodic_run(struct dfsrsrv_service *service)
 		return status;
 	}
 
+	status = dfsrsrv_process_updates(service);
+	if (!NT_STATUS_IS_OK(status)) {
+		DEBUG(0, ("dfsrsrv: Failed to process updates: %s\n",
+			  nt_errstr(status)));
+		return status;
+	}
+
 	return NT_STATUS_OK;
 }
 
@@ -117,7 +124,7 @@ NTSTATUS dfsrsrv_periodic_schedule(struct dfsrsrv_service *service,
 		if (tmp_ctx == NULL) {
 			return NT_STATUS_NO_MEMORY;
 		}
-		DEBUG(6, ("dfsrsrv: periodic schedule (%u) %sscheduled "
+		DEBUG(4, ("dfsrsrv: periodic schedule (%u) %sscheduled "
 			  "for: %s\n", next_interval,
 			  (service->periodic.te ? "re" : ""),
 			  nt_time_string(tmp_ctx,

@@ -166,6 +166,14 @@ struct dfsrsrv_service {
 	} periodic;
 
 	struct {
+		/*
+		 * here we have a reference to the immidicate event that was
+		 * scheduled after receive a batch of updates
+		 */
+		struct tevent_immediate *im;
+	} pending;
+
+	struct {
 		/* Current version vector being processed */
 		struct dfsrsrv_vv_queue *current_vv;
 
