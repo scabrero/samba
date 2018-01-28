@@ -130,6 +130,7 @@ static struct tevent_req *dfsrsrv_process_send(
 	return req;
 }
 
+static void dfsrsrv_process_download_done(struct tevent_req *subreq);
 static void dfsrsrv_process_next(struct tevent_req *subreq)
 {
 	struct tevent_req *req;
@@ -164,18 +165,6 @@ static void dfsrsrv_process_next(struct tevent_req *subreq)
 	}
 
 	/*
-	 * [MS-FRS2] 3.3.4.8 Upon successful completion, the client must
-	 * proceed to download the full file contents. If the server context
-	 * handle returned is set to 0, the entire contents fit in the buffer
-	 * provided as part of the output parameters. The client assumes that
-	 * the returne value of frsUpdate parameter holds the authoritative
-	 * metadata for the file contents that corresponds to the time that
-	 * the file download took place
-	 */
-
-	/* TODO */
-
-	/*
 	 * Create or tructate the stage file and write the received buffer. If
 	 * no data received this may be because the update does not fit in the
 	 * InitializeFileTransferAsync buffer. This will prepare the staging
@@ -192,7 +181,55 @@ static void dfsrsrv_process_next(struct tevent_req *subreq)
 		return;
 	}
 
+	/*
+	 * [MS-FRS2] 3.3.4.8 Upon successful completion, the client must
+	 * proceed to download the full file contents. If the server context
+	 * handle returned is set to 0, the entire contents fit in the buffer
+	 * provided as part of the output parameters. The client assumes that
+	 * the returne value of frsUpdate parameter holds the authoritative
+	 * metadata for the file contents that corresponds to the time that
+	 * the file download took place
+	 */
+	if (state->entry->update->present &&
+			!ndr_policy_handle_empty(&state->server_context)) {
+		/* The update did not fit in the provided buffer. Proceed to
+		 * download the full update. */
+		DBG_DEBUG("Downloading full update {%s}-%lu (%s)\n",
+			  GUID_buf_string(&state->entry->update->gsvn_db_guid,
+					  &txtguid1),
+			  state->entry->update->gsvn_version,
+			  state->entry->update->name);
+		subreq = dfsrsrv_download_update_send(state, state->ev_ctx,
+				state->queue->pipe, state->server_context,
+				state->staging_file);
+		if (tevent_req_nomem(subreq, req)) {
+			return;
+		}
+		tevent_req_set_callback(subreq, dfsrsrv_process_download_done,
+					req);
+		return;
+	}
+
 	/* TODO Install to persistent storage */
+
+	tevent_req_done(req);
+}
+
+static void dfsrsrv_process_download_done(struct tevent_req *subreq)
+{
+	struct tevent_req *req;
+	NTSTATUS status;
+
+	req = tevent_req_callback_data(subreq, struct tevent_req);
+
+	status = dfsrsrv_download_update_recv(subreq);
+	TALLOC_FREE(subreq);
+	if (tevent_req_nterror(req, status)) {
+		return;
+	}
+
+	/* At this point the update is fully downloaded to the staging file.
+	 * TODO Install to persistent storage */
 
 	tevent_req_done(req);
 }
