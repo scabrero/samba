@@ -89,6 +89,12 @@ struct dfsrsrv_content_set {
 	bool enabled;
 	bool read_only;
 
+	/* Local paths of this set */
+	const char *conflict_path;
+	const char *staging_path;
+	const char *installing_path;
+	const char *root_path;
+
 	/* What we know about this content set */
 	struct frstrans_VersionVector *known_vv;
 	uint32_t known_vv_count;

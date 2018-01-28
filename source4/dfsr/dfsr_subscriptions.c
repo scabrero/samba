@@ -183,6 +183,63 @@ static NTSTATUS dfsrsrv_refresh_group_topology(
 	return NT_STATUS_OK;
 }
 
+static NTSTATUS dfsrsrv_init_set_paths(TALLOC_CTX *mem_ctx,
+				       struct dfsrsrv_content_set *set)
+{
+	int ret;
+	char *tmp;
+	struct GUID_txt_buf tmp_buf;
+
+	tmp = talloc_asprintf(mem_ctx, "%s/DfsrPrivate", set->root_path);
+	if (tmp == NULL) {
+		return NT_STATUS_NO_MEMORY;
+	}
+
+	ret = mkdir(tmp,  S_IRWXU | S_IWGRP | S_IRGRP | S_IROTH | S_IXOTH);
+	if (ret != 0 && errno != EEXIST) {
+		DBG_ERR("Failed to create directory %s: %s\n",
+			tmp, strerror(errno));
+		return map_nt_error_from_unix_common(errno);
+	}
+
+	ret = mkdir(set->staging_path, S_IRWXU | S_IWGRP | S_IRGRP |
+				S_IROTH | S_IXOTH);
+	if (ret != 0 && errno != EEXIST) {
+		DBG_ERR("Failed to create directory %s: %s\n",
+			set->staging_path, strerror(errno));
+		return map_nt_error_from_unix_common(errno);
+	}
+
+	tmp = talloc_asprintf(mem_ctx, "%s/%s", set->staging_path,
+			      GUID_buf_string(&set->guid, &tmp_buf));
+	ret = mkdir(tmp,  S_IRWXU | S_IWGRP | S_IRGRP | S_IROTH | S_IXOTH);
+	if (ret != 0 && errno != EEXIST) {
+		DBG_ERR("Failed to create directory %s: %s\n",
+			tmp, strerror(errno));
+		talloc_free(tmp);
+		return map_nt_error_from_unix_common(errno);
+	}
+	talloc_free(tmp);
+
+	ret = mkdir(set->installing_path, S_IRWXU | S_IWGRP | S_IRGRP |
+					  S_IROTH | S_IXOTH);
+	if (ret != 0 && errno != EEXIST) {
+		DBG_ERR("Failed to create directory %s: %s\n",
+			set->installing_path, strerror(errno));
+		return map_nt_error_from_unix_common(errno);
+	}
+
+	ret = mkdir(set->conflict_path, S_IRWXU | S_IWGRP | S_IRGRP |
+					S_IROTH | S_IXOTH);
+	if (ret != 0 && errno != EEXIST) {
+		DBG_ERR("Failed to create directory %s: %s\n",
+			set->conflict_path, strerror(errno));
+		return map_nt_error_from_unix_common(errno);
+	}
+
+	return NT_STATUS_OK;
+}
+
 static NTSTATUS dfsrsrv_refresh_group_content_sets(
 		TALLOC_CTX *mem_ctx,
 		struct dfsrsrv_service *service,
@@ -195,8 +252,11 @@ static NTSTATUS dfsrsrv_refresh_group_content_sets(
 		"msDFSR-ContentSetGuid",
 		"msDFSR-Enabled",
 		"msDFSR-ReadOnly",
+		"msDFSR-RootPath",
+		"msDFSR-StagingPath",
 		NULL };
 	struct GUID_txt_buf txtguid1, txtguid2;
+	NTSTATUS status;
 
 	DBG_INFO("Refreshing replication group {%s} content set "
 		 "subscriptions\n", GUID_buf_string(&group->guid, &txtguid1));
@@ -264,6 +324,67 @@ static NTSTATUS dfsrsrv_refresh_group_content_sets(
 			if (set->name == NULL) {
 				TALLOC_FREE(set);
 				return NT_STATUS_NO_MEMORY;
+			}
+
+			set->staging_path = talloc_strdup(set,
+				ldb_msg_find_attr_as_string(msg,
+					"msDFSR-StagingPath", NULL));
+
+			set->conflict_path = talloc_strdup(set,
+					ldb_msg_find_attr_as_string(msg,
+					"msDFSR-ConflictPath", NULL));
+
+			set->root_path = talloc_strdup(set,
+				ldb_msg_find_attr_as_string(msg,
+					"msDFSR-RootPath", NULL));
+
+			if (set->root_path == NULL) {
+				struct GUID_txt_buf txtguid;
+				DBG_ERR("Content path not defined for folder "
+					"{%s}, skipped.\n",
+					GUID_buf_string(&set->guid, &txtguid));
+				TALLOC_FREE(set);
+				continue;
+			}
+
+			/* Set defaults if not set in LDAP */
+			if (set->root_path && set->staging_path == NULL) {
+				set->staging_path = talloc_asprintf(set,
+						"%s/DfsrPrivate/Staging",
+						set->root_path);
+				if (set->staging_path == NULL) {
+					TALLOC_FREE(set);
+					return NT_STATUS_NO_MEMORY;
+				}
+			}
+
+			if (set->root_path && set->conflict_path == NULL) {
+				set->conflict_path = talloc_asprintf(set,
+						"%s/DfsrPrivate/ConflictAndDeleted",
+						set->root_path);
+				if (set->conflict_path == NULL) {
+					TALLOC_FREE(set);
+					return NT_STATUS_NO_MEMORY;
+				}
+			}
+
+			if (set->root_path) {
+				set->installing_path = talloc_asprintf(set,
+						"%s/DfsrPrivate/Installing",
+						set->root_path);
+				if (set->installing_path == NULL) {
+					TALLOC_FREE(set);
+					return NT_STATUS_NO_MEMORY;
+				}
+			}
+
+			status = dfsrsrv_init_set_paths(mem_ctx, set);
+			if (!NT_STATUS_IS_OK(status)) {
+				DBG_ERR("Failed to initialize local "
+					"directories: %s\n",
+					nt_errstr(status));
+				TALLOC_FREE(set);
+				return status;
 			}
 
 			DLIST_ADD_END(group->sets, set);

@@ -50,6 +50,7 @@ static NTSTATUS dfsrsrv_sysvol_join(TALLOC_CTX *mem_ctx,
 	const char *sysvol_path;
 	int ret;
 	bool sysvol_join;
+	const char *staging_path;
 
 	sysvol_join = lpcfg_parm_bool(service->task->lp_ctx, NULL, "dfsrsrv",
 				      "sysvol_join", false);
@@ -225,6 +226,20 @@ static NTSTATUS dfsrsrv_sysvol_join(TALLOC_CTX *mem_ctx,
 	}
 
 	ret = ldb_msg_add_string(msg, "msDFSR-RootPath", sysvol_path);
+	if (ret != LDB_SUCCESS) {
+		DBG_ERR("Failed to add message attribute: %s\n",
+			ldb_errstring(service->samdb));
+		status = dsdb_ldb_err_to_ntstatus(ret);
+		goto fail;
+	}
+
+	staging_path = talloc_asprintf(mem_ctx, "%s/DfsrPrivate/Staging",
+			sysvol_path);
+	if (staging_path == NULL) {
+		status = NT_STATUS_NO_MEMORY;
+		goto fail;
+	}
+	ret = ldb_msg_add_string(msg, "msDFSR-StagingPath", staging_path);
 	if (ret != LDB_SUCCESS) {
 		DBG_ERR("Failed to add message attribute: %s\n",
 			ldb_errstring(service->samdb));
