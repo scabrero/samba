@@ -216,6 +216,14 @@ static void dfsrsrv_task_init(struct task_server *task)
 		return;
 	}
 
+	service->meet_notify_ctx = dfsrsrv_meet_notify_init(service,
+			service->task->msg_ctx);
+	if (service->meet_notify_ctx == NULL) {
+		task_server_terminate(task,
+			"dfsrsrv: Failed to init messaging context\n", true);
+		return;
+	}
+
 	periodic_startup_interval = lpcfg_parm_int(task->lp_ctx, NULL,
 						   "dfsrsrv",
 						   "periodic_startup_interval",

@@ -30,6 +30,8 @@
 
 struct ldb_dn;
 struct dfsr_db;
+struct imessaging_context;
+struct dfsrsrv_meet_notify_context;
 
 enum dfsr_connection_state {
 	CONNECTION_STATE_DISCONNECTED,
@@ -155,6 +157,9 @@ struct dfsrsrv_service {
 
 	/* a connection to the dfsr db */
 	struct dfsr_db *dfsrdb;
+
+	/* Notifications from DFS-R meet module */
+	struct dfsrsrv_meet_notify_context *meet_notify_ctx;
 
 	/* some stuff for periodic processing */
 	struct {
