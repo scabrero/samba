@@ -111,3 +111,14 @@ NTSTATUS dfsrsrv_staging_write_buffer(TALLOC_CTX *mem_ctx,
 
 	return NT_STATUS_OK;
 }
+
+NTSTATUS dfsrsrv_staging_delete(const char *path)
+{
+	if (path != NULL && strlen(path) > 0) {
+		int rc = unlink(path);
+		if (rc == -1 && errno != ENOENT) {
+			return map_nt_error_from_unix_common(errno);
+		}
+	}
+	return NT_STATUS_OK;
+}

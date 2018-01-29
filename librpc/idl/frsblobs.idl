@@ -48,4 +48,15 @@ interface frsblobs
 		boolean32 meet_installed;
 		frstrans_Update *update;
 	} dfsr_db_record;
+
+	typedef [public] struct {
+		[in,ref,charset(DOS),string] uint8 *staged_file;
+		[in,ref,charset(DOS),string] uint8 *installing_dir;
+		[in,ref,charset(DOS),string] uint8 *root_dir;
+		[in,ref] frstrans_Update *update;
+	} dfsr_meet_install_update;
+
+	typedef [public] struct {
+		NTSTATUS result;
+	} dfsr_meet_update_installed;
 }

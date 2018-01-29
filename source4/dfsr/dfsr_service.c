@@ -216,6 +216,16 @@ static NTSTATUS dfsrsrv_task_init(struct task_server *task)
 		return status;
 	}
 
+	status = dfsrsrv_meet_notify_init(service,
+					  service->task->msg_ctx,
+					  &service->meet_notify_ctx);
+	if (!NT_STATUS_IS_OK(status)) {
+		task_server_terminate(task, talloc_asprintf(task,
+			"dfsrsrv: Failed to init meet messaging context: %s\n",
+			nt_errstr(status)), true);
+		return status;
+	}
+
 	periodic_startup_interval = lpcfg_parm_int(task->lp_ctx, NULL,
 						   "dfsrsrv",
 						   "periodic_startup_interval",

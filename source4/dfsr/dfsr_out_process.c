@@ -34,6 +34,7 @@
 struct dfsrsrv_process_state {
 	struct tevent_context *ev_ctx;
 	struct imessaging_context *imsg_ctx;
+	struct dfsrsrv_meet_notify_context *notify_ctx;
 	struct dfsrsrv_vv_queue *queue;
 	struct dfsrsrv_update *entry;
 
@@ -49,10 +50,12 @@ struct dfsrsrv_process_state {
 };
 
 static void dfsrsrv_process_next(struct tevent_req *subreq);
+static void dfsrsrv_process_install_done(struct tevent_req *subreq);
 static struct tevent_req *dfsrsrv_process_send(
 		TALLOC_CTX *mem_ctx,
 		struct tevent_context *ev_ctx,
 		struct imessaging_context *imsg_ctx,
+		struct dfsrsrv_meet_notify_context *notify_ctx,
 		struct dfsrsrv_vv_queue *queue,
 		struct dfsrsrv_update *entry)
 {
@@ -67,6 +70,7 @@ static struct tevent_req *dfsrsrv_process_send(
 
 	state->ev_ctx = ev_ctx;
 	state->imsg_ctx = imsg_ctx;
+	state->notify_ctx = notify_ctx;
 	state->queue = queue;
 	state->entry = entry;
 	state->staging_policy = FRSTRANS_STAGING_POLICY_SERVER_DEFAULTY;
@@ -122,9 +126,19 @@ static struct tevent_req *dfsrsrv_process_send(
 					  &txtguid),
 			  state->entry->update->gsvn_version,
 			  state->entry->update->name);
-		/* TODO Install to persistent storage */
-		tevent_req_done(req);
-		return tevent_req_post(req, ev_ctx);
+		subreq = dfsrsrv_install_send(state,
+				state->ev_ctx,
+				state->imsg_ctx,
+				state->notify_ctx,
+				"",
+				state->queue->set->installing_path,
+				state->queue->set->root_path,
+				state->entry->update);
+		if (tevent_req_nomem(subreq, req)) {
+			return tevent_req_post(req, ev_ctx);
+		}
+		tevent_req_set_callback(subreq, dfsrsrv_process_install_done,
+					req);
 	}
 
 	return req;
@@ -210,17 +224,30 @@ static void dfsrsrv_process_next(struct tevent_req *subreq)
 		return;
 	}
 
-	/* TODO Install to persistent storage */
-
-	tevent_req_done(req);
+	/* Update fits in the InitializeTransferAsync provided buffer and is
+	 * written to staging file. Install to persistent storage */
+	subreq = dfsrsrv_install_send(state,
+				      state->ev_ctx,
+				      state->imsg_ctx,
+				      state->notify_ctx,
+				      state->staging_file,
+				      state->queue->set->installing_path,
+				      state->queue->set->root_path,
+				      state->entry->update);
+	if (tevent_req_nomem(subreq, req)) {
+		return;
+	}
+	tevent_req_set_callback(subreq, dfsrsrv_process_install_done, req);
 }
 
 static void dfsrsrv_process_download_done(struct tevent_req *subreq)
 {
 	struct tevent_req *req;
+	struct dfsrsrv_process_state *state;
 	NTSTATUS status;
 
 	req = tevent_req_callback_data(subreq, struct tevent_req);
+	state = tevent_req_data(req, struct dfsrsrv_process_state);
 
 	status = dfsrsrv_download_update_recv(subreq);
 	TALLOC_FREE(subreq);
@@ -229,7 +256,51 @@ static void dfsrsrv_process_download_done(struct tevent_req *subreq)
 	}
 
 	/* At this point the update is fully downloaded to the staging file.
-	 * TODO Install to persistent storage */
+	 * Install to persistent storage */
+	subreq = dfsrsrv_install_send(state,
+				      state->ev_ctx,
+				      state->imsg_ctx,
+				      state->notify_ctx,
+				      state->staging_file,
+				      state->queue->set->installing_path,
+				      state->queue->set->root_path,
+				      state->entry->update);
+	if (tevent_req_nomem(subreq, req)) {
+		return;
+	}
+	tevent_req_set_callback(subreq, dfsrsrv_process_install_done, req);
+}
+
+static void dfsrsrv_process_install_done(struct tevent_req *subreq)
+{
+	struct tevent_req *req;
+	struct dfsrsrv_process_state *state;
+	NTSTATUS status;
+	struct GUID_txt_buf txtguid1;
+
+	req = tevent_req_callback_data(subreq, struct tevent_req);
+	state = tevent_req_data(req, struct dfsrsrv_process_state);
+	TALLOC_FREE(state->data_buffer);
+
+	status = dfsrsrv_install_recv(subreq);
+	TALLOC_FREE(subreq);
+
+	DBG_DEBUG("Installed {%s}-%lu (%s): %s\n",
+		  GUID_buf_string(&state->entry->update->gsvn_db_guid,
+				  &txtguid1),
+		  state->entry->update->gsvn_version,
+		  state->entry->update->name, nt_errstr(status));
+
+	if (tevent_req_nterror(req, status)) {
+		return;
+	}
+
+	status = dfsrsrv_staging_delete(state->staging_file);
+	if (tevent_req_nterror(req, status)) {
+		DBG_ERR("Failed to delete staging file '%s': %s\n",
+			state->staging_file, nt_errstr(status));
+		return;
+	}
 
 	tevent_req_done(req);
 }
@@ -490,6 +561,7 @@ NTSTATUS dfsrsrv_process_updates(struct dfsrsrv_service *service)
 	entry->req = dfsrsrv_process_send(entry,
 			service->task->event_ctx,
 			service->task->msg_ctx,
+			service->meet_notify_ctx,
 			service->process_queue.current_vv,
 			entry);
 	if (entry->req == NULL) {

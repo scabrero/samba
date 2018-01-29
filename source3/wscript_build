@@ -721,6 +721,7 @@ bld.SAMBA3_LIBRARY('smbd_base',
                         NDR_QUOTA
                         GNUTLS_HELPERS
                         fd_handle
+                        dfsrdb
                    ''' +
                    bld.env['dmapi_lib'] +
                    bld.env['legacy_quota_libs'] +
