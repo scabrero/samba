@@ -262,6 +262,121 @@ out:
 	return status;
 }
 
+static NTSTATUS dfsr_meet_unmarshal(TALLOC_CTX *mem_ctx,
+				    const char *installing_path)
+{
+	NTSTATUS status;
+	int fd_in = 0;
+	off_t offset = 0;
+	ssize_t nread = 0;
+
+	if (installing_path == NULL) {
+		return NT_STATUS_INVALID_PARAMETER;
+	}
+
+	DBG_DEBUG("Unmarshalling '%s'\n", installing_path);
+
+	/* Unmarshal the decompressed streams */
+	fd_in = open(installing_path, O_RDONLY);
+	if (fd_in == -1) {
+		int saved_errno = errno;
+		DBG_ERR("Failed to open file %s: %s\n",
+			installing_path, strerror(saved_errno));
+		status = map_nt_error_from_unix(saved_errno);
+		goto out;
+	}
+
+	do {
+		DATA_BLOB in;
+		struct dfsr_stream_header streamhdr;
+		enum ndr_err_code ndr_err;
+
+		/* Read the stream header */
+		in = data_blob_talloc_zero(mem_ctx,
+				sizeof(struct dfsr_stream_header));
+		nread = read(fd_in, in.data, in.length);
+		if (nread < 0) {
+			DBG_ERR("Failed to read install file: %s\n",
+				strerror(errno));
+			status = map_nt_error_from_unix(errno);
+			goto out;
+		}
+
+		offset += nread;
+		ndr_err = ndr_pull_struct_blob(&in, mem_ctx, &streamhdr,
+			(ndr_pull_flags_fn_t)ndr_pull_dfsr_stream_header);
+		data_blob_free(&in);
+
+		if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
+			DBG_ERR("Failed to pull stream header: %s\n",
+				ndr_errstr(ndr_err));
+			status = ndr_map_error2ntstatus(ndr_err);
+			goto out;
+		}
+
+		/*
+		 * Handle the stream. It is not specified, but they seems
+		 * to be always in the same order: metadata, security and
+		 * flat data.
+		 */
+		switch (streamhdr.type) {
+		case MS_TYPE_META_DATA:
+			// TODO Create or delete file or directory
+
+			offset += streamhdr.block_size;
+
+			break;
+		case MS_TYPE_SECURITY_DATA:
+			// TODO Write security descriptor
+
+			offset += streamhdr.block_size;
+
+			break;
+		case MS_TYPE_FLAT_DATA:
+		{
+			ssize_t remaining;
+			struct stat statbuf;
+			int ret;
+
+			ret = fstat(fd_in, &statbuf);
+			if (ret) {
+				int saved_errno = errno;
+				DBG_ERR("Failed fstat: %s\n",
+					strerror(saved_errno));
+				status = map_nt_error_from_unix(saved_errno);
+				goto out;
+			}
+
+			remaining = statbuf.st_size - offset;
+
+			// TODO Write data
+
+			offset += remaining;
+
+			break;
+		}
+		default:
+			break;
+		}
+
+		if (lseek(fd_in, offset, SEEK_SET) < 0) {
+			int saved_errno = errno;
+			DBG_ERR("Failed lseek: %s\n", strerror(saved_errno));
+			status = map_nt_error_from_unix(saved_errno);
+			goto out;
+		}
+	} while (nread > 0);
+
+	status = NT_STATUS_OK;
+
+out:
+	if (fd_in > 0) {
+		close(fd_in);
+	}
+
+	return status;
+}
+
 static NTSTATUS dfsr_meet_install_update_internal(TALLOC_CTX *mem_ctx,
 		struct dfsr_meet_state *state,
 		const char *staged_file,
@@ -308,6 +423,14 @@ static NTSTATUS dfsr_meet_install_update_internal(TALLOC_CTX *mem_ctx,
 			installing_path);
 	if (!NT_STATUS_IS_OK(status)) {
 		DBG_ERR("Failed to uncompress staged update: %s\n",
+			nt_errstr(status));
+		goto out;
+	}
+
+	/* Unmarshal the streams */
+	status = dfsr_meet_unmarshal(tmp_ctx, installing_path);
+	if (!NT_STATUS_IS_OK(status)) {
+		DBG_ERR("Failed to unmarshal staged update: %s\n",
 			nt_errstr(status));
 		goto out;
 	}
