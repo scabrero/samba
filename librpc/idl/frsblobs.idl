@@ -59,4 +59,11 @@ interface frsblobs
 	typedef [public] struct {
 		NTSTATUS result;
 	} dfsr_meet_update_installed;
+
+	typedef [public] struct {
+		[charset(DOS),value("XBLO")] uint8 header[4];
+		uint32 compressed_size;
+		uint32 uncompressed_size;
+		[subcontext(0),subcontext_size(compressed_size),flag(NDR_REMAINING)] DATA_BLOB data;
+	} dfsr_xpress_block;
 }
