@@ -44,4 +44,13 @@ interface fscc
 		fscc_FileAttributes fileAttribute;
 		uint32 reserved;
 	} fscc_FileNetworkOpenInformation;
+
+	typedef [public] struct {
+		NTTIME creationTime;
+		NTTIME lastAccessTime;
+		NTTIME lastWriteTime;
+		NTTIME changeTime;
+		fscc_FileAttributes fileAttribute;
+		uint32 reserved;
+	} fscc_FileBasicInformation;
 }
