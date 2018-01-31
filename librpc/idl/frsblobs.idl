@@ -2,6 +2,7 @@
 
 import "file_id.idl";
 import "frstrans.idl";
+import "fscc.idl";
 
 /* FRS and DFS-R related blobs decoding */
 
@@ -84,4 +85,15 @@ interface frsblobs
 		uint32 block_size;
 		dfsr_StreamFlags flags;
 	} dfsr_stream_header;
+
+	typedef [public] struct {
+		uint32 version;
+		uint32 reserved1;
+		fscc_FileBasicInformation info;
+		uint16 sd_control;
+		uint16 reserved2; /* reserved 2 is 6 bytes*/
+		uint32 reserved21;
+		hyper primary_data_stream_size;
+		hyper reserved3;
+	} dfsr_metadata;
 }

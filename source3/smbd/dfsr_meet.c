@@ -33,6 +33,7 @@
 #include "smbd/smbd.h"
 #include "auth.h"
 #include "lib/global_contexts.h"
+#include "libcli/security/security.h"
 
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_DFSR_MEET
@@ -63,6 +64,66 @@ static NTSTATUS dfsr_meet_get_installing_path(TALLOC_CTX *mem_ctx,
 	}
 
 	return NT_STATUS_OK;
+}
+
+static NTSTATUS dfsr_meet_get_smb_filename(TALLOC_CTX *mem_ctx,
+		struct dfsr_db *db_ctx,
+		struct connection_struct *conn,
+		const struct frstrans_Update *update,
+		struct smb_filename **fname)
+{
+	NTSTATUS status;
+	struct dfsr_db_record *rec = NULL;
+
+	if (update->uid_version != 1) {
+		status = dfsr_db_fetch(db_ctx, mem_ctx,
+				&update->parent_db_guid,
+				update->parent_version, &rec);
+		if (!NT_STATUS_IS_OK(status)) {
+			struct GUID_txt_buf guid;
+			DBG_ERR("Failed to fetch {%s}-v%lu record: %s\n",
+				GUID_buf_string(&update->parent_db_guid, &guid),
+				update->parent_version, nt_errstr(status));
+			goto out;
+		}
+
+		status = dfsr_meet_get_smb_filename(mem_ctx, db_ctx, conn,
+				rec->update, fname);
+		if (!NT_STATUS_IS_OK(status)) {
+			DBG_ERR("Failed to build update path: %s\n",
+				nt_errstr(status));
+			goto out;
+		}
+	}
+
+	if (update->uid_version == 1) {
+		/* The root folder */
+		*fname = synthetic_smb_fname(mem_ctx, ".", NULL, NULL, 0, 0);
+		if (*fname == NULL) {
+			status = NT_STATUS_NO_MEMORY;
+			goto out;
+		}
+		status = NT_STATUS_OK;
+		goto out;
+	}
+
+	*fname = synthetic_smb_fname(mem_ctx,
+				     talloc_asprintf(mem_ctx,
+						     "%s/%s",
+						     (*fname)->base_name,
+						     update->name),
+				     NULL, NULL, 0, 0);
+	if (*fname == NULL) {
+		status = NT_STATUS_NO_MEMORY;
+		goto out;
+	}
+
+	status = NT_STATUS_OK;
+
+out:
+	TALLOC_FREE(rec);
+
+	return status;
 }
 
 static NTSTATUS dfsr_meet_uncompress_staged(TALLOC_CTX *mem_ctx,
@@ -265,13 +326,188 @@ out:
 	return status;
 }
 
+static NTSTATUS dfsr_meet_stream_metadata(TALLOC_CTX *mem_ctx,
+		struct dfsr_db *db_ctx,
+		const struct frstrans_Update *update,
+		struct connection_struct *conn,
+		int fd_in,
+		struct dfsr_stream_header *header,
+		struct files_struct **_fsp,
+		off_t *offset)
+{
+	NTSTATUS status;
+	TALLOC_CTX *tmp_ctx;
+	DATA_BLOB in;
+	ssize_t nread;
+	enum ndr_err_code ndr_err;
+	struct dfsr_metadata metadata;
+	uint32_t file_attributes;
+	uint32_t create_options;
+	uint32_t disposition;
+	struct dfsr_db_record *rec = NULL;
+	struct smb_filename *smb_fname = NULL;
+	struct files_struct *fsp = NULL;
+
+	DBG_DEBUG("Unmarshalling metadata stream\n");
+
+	tmp_ctx = talloc_new(mem_ctx);
+	if (tmp_ctx == NULL) {
+		return NT_STATUS_NO_MEMORY;
+	}
+
+	in = data_blob_talloc_zero(tmp_ctx, header->block_size);
+	nread = read(fd_in, in.data, header->block_size);
+	*offset += nread;
+
+	ndr_err = ndr_pull_struct_blob(&in, tmp_ctx, &metadata,
+			(ndr_pull_flags_fn_t)ndr_pull_dfsr_metadata);
+	data_blob_free(&in);
+	if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
+		DBG_ERR("Failed to pull metadata stream: %s\n",
+			ndr_errstr(ndr_err));
+		status = ndr_map_error2ntstatus(ndr_err);
+		goto out;
+	}
+
+	/* Check if this UID is already installed */
+	status = dfsr_db_fetch(db_ctx, tmp_ctx, &update->uid_db_guid,
+			update->uid_version, &rec);
+	if (NT_STATUS_IS_OK(status)) {
+		/* Build the stored update path in persistent storage */
+		status = dfsr_meet_get_smb_filename(tmp_ctx, db_ctx, conn,
+				rec->update, &smb_fname);
+		if (!NT_STATUS_IS_OK(status)) {
+			DBG_ERR("Failed to build update path: %s\n",
+				nt_errstr(status));
+			goto out;
+		}
+	} else if (NT_STATUS_EQUAL(NT_STATUS_NOT_FOUND, status)) {
+		/* Build the new path in persistent storage */
+		status = dfsr_meet_get_smb_filename(tmp_ctx, db_ctx, conn,
+				update, &smb_fname);
+		if (!NT_STATUS_IS_OK(status)) {
+			DBG_ERR("Failed to build update path: %s\n",
+				nt_errstr(status));
+			goto out;
+		}
+	} else {
+		struct GUID_txt_buf guid;
+		DBG_ERR("Failed to fetch {%s}-v%lu record: %s\n",
+			GUID_buf_string(&update->uid_db_guid, &guid),
+			update->uid_version, nt_errstr(status));
+		goto out;
+	}
+
+	/* Open the file */
+	create_options = 0;
+	disposition = FILE_OVERWRITE_IF;
+	if (metadata.info.fileAttribute & FSCC_FILE_ATTRIBUTE_DIRECTORY) {
+		create_options |= FILE_DIRECTORY_FILE;
+		disposition = FILE_OPEN_IF;
+	}
+
+	file_attributes = metadata.info.fileAttribute;
+	status = SMB_VFS_CREATE_FILE(
+			conn,                   /* conn */
+			NULL,                   /* req */
+			smb_fname,       	/* fname */
+			FILE_GENERIC_ALL,       /* access_mask */
+			(FILE_SHARE_READ |	/* share_access */
+			    FILE_SHARE_WRITE),
+			disposition,            /* create_disposition */
+			create_options,         /* create_options */
+			file_attributes,        /* file_attributes */
+			INTERNAL_OPEN_ONLY,     /* oplock_request */
+			NULL,                   /* lease */
+			0,                      /* allocation_size */
+			0,                      /* private_flags */
+			NULL,                   /* sd */
+			NULL,                   /* ea_list */
+			&fsp,                   /* result */
+			NULL,                   /* pinfo */
+			NULL, NULL);            /* create context */
+	if (!NT_STATUS_IS_OK(status)) {
+		DBG_ERR("Failed to open or create file '%s': %s\n",
+			smb_fname->base_name, nt_errstr(status));
+		goto out;
+	}
+
+	/* Rename if reparented or renamed */
+	if (rec && (GUID_compare(&rec->update->parent_db_guid,
+				 &update->parent_db_guid) != 0 ||
+		    rec->update->parent_version != update->parent_version ||
+		    strcasecmp_m(rec->update->name, update->name) != 0))
+	{
+		struct smb_filename *new_smb_fname = NULL;
+		const char *dst_original_lcomp = NULL;
+		const char *newname = update->name;
+		uint32_t ucf_flags = 0;
+
+		/* Build the new path in persistent storage */
+		status = dfsr_meet_get_smb_filename(tmp_ctx, db_ctx, conn,
+				update, &new_smb_fname);
+		if (!NT_STATUS_IS_OK(status)) {
+			DBG_ERR("Failed to build update path: %s\n",
+				nt_errstr(status));
+			goto out;
+		}
+
+		DBG_DEBUG("Renaming (%s) '%s' -> '%s'\n",
+			  fsp_fnum_dbg(fsp), fsp_str_dbg(fsp),
+			  smb_fname_str_dbg(new_smb_fname));
+
+		/*
+		 * Set the original last component, since
+		 * rename_internals_fsp() requires it.
+		 */
+		dst_original_lcomp = get_original_lcomp(new_smb_fname,
+							conn,
+							newname,
+							ucf_flags);
+		if (dst_original_lcomp == NULL) {
+			DBG_ERR("No memory\n");
+			status = NT_STATUS_NO_MEMORY;
+			goto out;
+		}
+
+		status = rename_internals_fsp(conn,
+					      fsp,
+					      new_smb_fname,
+					      dst_original_lcomp,
+					      0,
+					      false);
+		if (!NT_STATUS_IS_OK(status)) {
+			DBG_ERR("Failed to rename (%s) '%s' to '%s': %s\n",
+				fsp_fnum_dbg(fsp), fsp_str_dbg(fsp),
+				smb_fname_str_dbg(new_smb_fname),
+				nt_errstr(status));
+			goto out;
+		}
+	}
+
+	/* TODO Set timestamps */
+
+	*_fsp = talloc_move(mem_ctx, &fsp);
+
+	status = NT_STATUS_OK;
+
+out:
+	TALLOC_FREE(tmp_ctx);
+
+	return status;
+}
+
 static NTSTATUS dfsr_meet_unmarshal(TALLOC_CTX *mem_ctx,
+				    struct dfsr_db *db_ctx,
+				    const struct frstrans_Update *update,
+				    struct connection_struct *conn,
 				    const char *installing_path)
 {
 	NTSTATUS status;
 	int fd_in = 0;
 	off_t offset = 0;
 	ssize_t nread = 0;
+	struct files_struct *fsp = NULL;
 
 	if (installing_path == NULL) {
 		return NT_STATUS_INVALID_PARAMETER;
@@ -324,10 +560,14 @@ static NTSTATUS dfsr_meet_unmarshal(TALLOC_CTX *mem_ctx,
 		 */
 		switch (streamhdr.type) {
 		case MS_TYPE_META_DATA:
-			// TODO Create or delete file or directory
-
-			offset += streamhdr.block_size;
-
+			status = dfsr_meet_stream_metadata(mem_ctx, db_ctx,
+					update, conn, fd_in, &streamhdr, &fsp,
+					&offset);
+			if (!NT_STATUS_IS_OK(status)) {
+				DBG_ERR("Failed to handle metadata "
+					"stream: %s\n", nt_errstr(status));
+				goto out;
+			}
 			break;
 		case MS_TYPE_SECURITY_DATA:
 			// TODO Write security descriptor
@@ -375,6 +615,15 @@ static NTSTATUS dfsr_meet_unmarshal(TALLOC_CTX *mem_ctx,
 out:
 	if (fd_in > 0) {
 		close(fd_in);
+	}
+
+	if (fsp != NULL) {
+		NTSTATUS status2;
+		status2 = close_file(NULL, fsp, NORMAL_CLOSE);
+		if (!NT_STATUS_IS_OK(status2)) {
+			DBG_ERR("Failed to close file: %s\n",
+				nt_errstr(status2));
+		}
 	}
 
 	return status;
@@ -482,7 +731,8 @@ static NTSTATUS dfsr_meet_install_update_internal(TALLOC_CTX *mem_ctx,
 	}
 
 	/* Unmarshal the streams */
-	status = dfsr_meet_unmarshal(tmp_ctx, installing_path);
+	status = dfsr_meet_unmarshal(tmp_ctx, state->db_ctx, update,
+			conn->conn, installing_path);
 	if (!NT_STATUS_IS_OK(status)) {
 		DBG_ERR("Failed to unmarshal staged update: %s\n",
 			nt_errstr(status));
