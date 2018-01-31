@@ -740,6 +740,118 @@ static NTSTATUS dfsr_meet_get_conn(const char *service,
 	return NT_STATUS_OK;
 }
 
+static NTSTATUS dfsr_meet_tombstone(TALLOC_CTX *mem_ctx,
+		struct dfsr_db *db_ctx,
+		struct connection_struct *conn,
+		const struct frstrans_Update *update)
+{
+	NTSTATUS status;
+	struct smb_filename *smb_fname = NULL;
+	struct dfsr_db_record *rec = NULL;
+	struct files_struct *fsp = NULL;
+	int create_options = 0;
+	int file_attributes = FILE_ATTRIBUTE_NORMAL;
+
+	/* Check if we have the UID in the database */
+	status = dfsr_db_fetch(db_ctx, mem_ctx, &update->uid_db_guid,
+				update->uid_version, &rec);
+	if (NT_STATUS_EQUAL(NT_STATUS_NOT_FOUND, status)) {
+		status = NT_STATUS_OK;
+		goto out;
+	} else if (NT_STATUS_IS_OK(status)) {
+		status = dfsr_meet_get_smb_filename(mem_ctx, db_ctx, conn,
+				rec->update, &smb_fname);
+		if (!NT_STATUS_IS_OK(status)) {
+			DBG_ERR("Failed to build update path: %s\n",
+				nt_errstr(status));
+			goto out;
+		}
+	} else {
+		struct GUID_txt_buf guid;
+		DBG_ERR("Failed to fetch {%s}-v%lu record: %s\n",
+			GUID_buf_string(&update->uid_db_guid, &guid),
+			update->uid_version, nt_errstr(status));
+	}
+
+	if (SMB_VFS_LSTAT(conn, smb_fname) != 0) {
+		int saved_errno = errno;
+		DBG_ERR("Failed lstat '%s': %s\n",
+			smb_fname->base_name, strerror(saved_errno));
+		status = map_nt_error_from_unix(saved_errno);
+		goto out;
+	}
+
+	if (update->attributes & FSCC_FILE_ATTRIBUTE_DIRECTORY) {
+		create_options |= FILE_DIRECTORY_FILE;
+		file_attributes = FILE_ATTRIBUTE_DIRECTORY;
+	}
+
+	status = openat_pathref_fsp(conn->cwd_fsp, smb_fname);
+	if (!NT_STATUS_IS_OK(status)) {
+		DBG_ERR("openat_pathref_fsp [%s] failed: %s\n",
+			smb_fname_str_dbg(smb_fname), nt_errstr(status));
+		goto out;
+	}
+
+	status = SMB_VFS_CREATE_FILE(
+		conn,                       /* conn */
+		NULL,                       /* req */
+		smb_fname,                  /* fname */
+		DELETE_ACCESS,              /* access_mask */
+		(FILE_SHARE_READ |
+		     FILE_SHARE_WRITE |
+		     FILE_SHARE_DELETE),    /* share_access */
+		FILE_OPEN,                  /* create_disposition */
+		create_options,             /* create_options */
+		file_attributes,            /* file_attributes */
+		INTERNAL_OPEN_ONLY,         /* oplock_request */
+		NULL,			    /* lease */
+		0,                          /* allocation_size */
+		0,			    /* private_flags */
+		NULL,                       /* sd */
+		NULL,                       /* ea_list */
+		&fsp,                       /* result */
+		NULL,                       /* pinfo */
+		NULL, NULL);		    /* create context */
+	if (!NT_STATUS_IS_OK(status)) {
+		DBG_ERR("SMB_VFS_CREATE_FILE [%s] failed: %s\n",
+			smb_fname_str_dbg(smb_fname), nt_errstr(status));
+		goto out;
+	}
+
+	status = can_set_delete_on_close(fsp, FILE_ATTRIBUTE_DIRECTORY);
+	if (!NT_STATUS_IS_OK(status)) {
+		close_file(NULL, fsp, ERROR_CLOSE);
+		DBG_ERR("can_set_delete_on_close [%s] failed: %s\n",
+			smb_fname_str_dbg(smb_fname), nt_errstr(status));
+		goto out;
+	}
+
+	if (!set_delete_on_close(fsp, true,
+			conn->session_info->security_token,
+			conn->session_info->unix_token)) {
+		close_file(NULL, fsp, ERROR_CLOSE);
+		DBG_ERR("set_delete_on_close [%s] failed: %s\n",
+			smb_fname_str_dbg(smb_fname), nt_errstr(status));
+		goto out;
+	}
+
+	status = close_file(NULL, fsp, NORMAL_CLOSE);
+	if (!NT_STATUS_IS_OK(status)) {
+		DBG_ERR("close_file [%s] failed: %s\n",
+			smb_fname_str_dbg(smb_fname), nt_errstr(status));
+		goto out;
+	}
+
+	status = NT_STATUS_OK;
+
+out:
+	TALLOC_FREE(rec);
+	TALLOC_FREE(smb_fname);
+
+	return status;
+}
+
 static NTSTATUS dfsr_meet_install_update_internal(TALLOC_CTX *mem_ctx,
 		struct dfsr_meet_state *state,
 		const char *staged_file,
@@ -785,6 +897,14 @@ static NTSTATUS dfsr_meet_install_update_internal(TALLOC_CTX *mem_ctx,
 
 	/* Check if this update is a tombstone pertaining to a deletion */
 	if (update->present == 0) {
+		status = dfsr_meet_tombstone(tmp_ctx, state->db_ctx,
+				conn->conn, update);
+		if (!NT_STATUS_IS_OK(status)) {
+			DBG_ERR("Failed to handle tombstone: %s\n",
+				nt_errstr(status));
+			goto out;
+		}
+
 		/* Store the tombstone */
 		goto store;
 	}
