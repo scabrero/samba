@@ -30,6 +30,9 @@
 #include "dfsr/dfsr_db.h"
 #include "system/filesys.h"
 #include "lib/compression/lzhuff_xpress.h"
+#include "smbd/smbd.h"
+#include "auth.h"
+#include "lib/global_contexts.h"
 
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_DFSR_MEET
@@ -377,6 +380,30 @@ out:
 	return status;
 }
 
+static NTSTATUS dfsr_meet_get_conn(const char *service,
+		struct conn_struct_tos **out)
+{
+	NTSTATUS status;
+	int snum = -1;
+
+	if (out == NULL) {
+		return NT_STATUS_INVALID_PARAMETER;
+	}
+
+	status = create_conn_struct_tos(global_messaging_context(),
+			snum, "/", get_session_info_system(), out);
+	if (!NT_STATUS_IS_OK(status)) {
+		DBG_ERR("Failed to connect: %s\n", nt_errstr(status));
+		return status;
+	}
+
+	/* Ignore read-only and share restrictions */
+	(*out)->conn->read_only = false;
+	(*out)->conn->share_access = SEC_RIGHTS_FILE_ALL;
+
+	return NT_STATUS_OK;
+}
+
 static NTSTATUS dfsr_meet_install_update_internal(TALLOC_CTX *mem_ctx,
 		struct dfsr_meet_state *state,
 		const char *staged_file,
@@ -387,10 +414,37 @@ static NTSTATUS dfsr_meet_install_update_internal(TALLOC_CTX *mem_ctx,
 	TALLOC_CTX *tmp_ctx;
 	NTSTATUS status;
 	char *installing_path;
+	struct conn_struct_tos *conn = NULL;
+	struct smb_filename *smb_dname = NULL;
 
 	tmp_ctx = talloc_new(mem_ctx);
 	if (tmp_ctx == NULL) {
 		return NT_STATUS_NO_MEMORY;
+	}
+
+	/* Create a conn struct to go through VFS layer when installing the
+	 * update. Will be allocated in current talloc_tos(). */
+	status = dfsr_meet_get_conn("", &conn);
+	if (!NT_STATUS_IS_OK(status)) {
+		DBG_ERR("Failed to create connection: %s\n",
+			nt_errstr(status));
+		goto out;
+	}
+
+	/* Switch to root directory */
+	smb_dname = synthetic_smb_fname(tmp_ctx, root_dir, NULL, NULL, 0, 0);
+	if (smb_dname == NULL) {
+		DBG_ERR("No memory\n");
+		status = NT_STATUS_NO_MEMORY;
+		goto out;
+	}
+
+	if (vfs_ChDir(conn->conn, smb_dname) == -1) {
+		int saved_errno = errno;
+		DBG_ERR("Failed to change to directory %s: %s\n",
+			smb_dname->base_name, strerror(saved_errno));
+		status = map_nt_error_from_unix(saved_errno);
+		goto out;
 	}
 
 	/* Check if this update is a tombstone pertaining to a deletion */
@@ -449,6 +503,10 @@ out:
 					strerror(errno));
 			}
 		}
+	}
+
+	if (conn != NULL) {
+		SMB_VFS_DISCONNECT(conn->conn);
 	}
 
 	TALLOC_FREE(tmp_ctx);
