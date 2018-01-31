@@ -509,6 +509,56 @@ out:
 	return status;
 }
 
+static NTSTATUS dfsr_meet_stream_flatdata(TALLOC_CTX *mem_ctx,
+		const struct frstrans_Update *update,
+		int fd_in,
+		struct files_struct *fsp,
+		off_t *offset)
+{
+	NTSTATUS status;
+	ssize_t remaining, nwritten;
+	struct stat statbuf;
+	int ret;
+
+	DEBUG(8, ("dfsrmeet: Unmarshalling flat data stream\n"));
+
+	ret = fstat(fd_in, &statbuf);
+	if (ret) {
+		DEBUG(0, ("dfsrmeet: Failed fstat: %s\n", strerror(errno)));
+		return map_nt_error_from_unix(errno);
+	}
+
+	if (*offset >= statbuf.st_size) {
+		/* Directory updates and empty files have no data */
+		return NT_STATUS_OK;
+	}
+
+	/* TODO The flat data follows [MS-BKUP] 2.1. Skip header for now */
+	*offset += 20;
+	if (lseek(fd_in, *offset, 0) < 0) {
+		DEBUG(0, ("dfsrmeet: Failed lseek: %s\n", strerror(errno)));
+		status = map_nt_error_from_unix(errno);
+		goto out;
+	}
+
+	remaining = statbuf.st_size - (*offset);
+	do {
+		nwritten = SMB_VFS_RECVFILE(fd_in, fsp, -1, remaining);
+		if (nwritten == -1) {
+			DEBUG(0, ("dfsrmeet: Failed recvfile: %s\n",
+				  strerror(errno)));
+			status = map_nt_error_from_unix(errno);
+			goto out;
+		}
+		*offset += nwritten;
+		remaining -= nwritten;
+	} while (remaining > 0);
+
+	status = NT_STATUS_OK;
+out:
+	return status;
+}
+
 static NTSTATUS dfsr_meet_unmarshal(TALLOC_CTX *mem_ctx,
 				    struct dfsr_db *db_ctx,
 				    const struct frstrans_Update *update,
@@ -590,27 +640,15 @@ static NTSTATUS dfsr_meet_unmarshal(TALLOC_CTX *mem_ctx,
 			}
 			break;
 		case MS_TYPE_FLAT_DATA:
-		{
-			ssize_t remaining;
-			struct stat statbuf;
-			int ret;
-
-			ret = fstat(fd_in, &statbuf);
-			if (ret) {
-				DEBUG(0, ("dfsrmeet: Failed fstat: %s\n",
-					  strerror(errno)));
-				status = map_nt_error_from_unix(errno);
+			status = dfsr_meet_stream_flatdata(mem_ctx, update,
+					fd_in, fsp, &offset);
+			if (!NT_STATUS_IS_OK(status)) {
+				DEBUG(0, ("dfsrmeet: Failed to handle "
+					  "flat data stream: %s\n",
+					  nt_errstr(status)));
 				goto out;
 			}
-
-			remaining = statbuf.st_size - offset;
-
-			// TODO Write data
-
-			offset += remaining;
-
 			break;
-		}
 		default:
 			break;
 		}
