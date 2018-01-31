@@ -355,22 +355,6 @@ static void dfsrsrv_process_done(struct tevent_req *req)
 
 	TALLOC_FREE(service->process_queue.current_vv->current_update);
 
-	/* [MS-FRS2] 1.3 Clients can update their previously saved version
-	 * chain vector based on the server's version chain vector after a
-	 * completed synchronization; that is, when all updates pertaining to
-	 * a version chain vector have been processed and all file data that
-	 * is required by a client to synchronize with a server has been
-	 * downloaded. */
-	if (service->process_queue.current_vv->pending_updates == NULL) {
-		/* TODO Merge and save the set known version chain vectors
-		 * with the processed one and save to database */
-
-		DLIST_REMOVE(service->process_queue.pending_vv,
-				service->process_queue.current_vv);
-		TALLOC_FREE(service->process_queue.current_vv);
-	}
-
-
 	/* Schedule inmediate trigger to continue with the next update */
 	tevent_schedule_immediate(service->pending.im,
 				  service->task->event_ctx,
@@ -656,12 +640,50 @@ NTSTATUS dfsrsrv_process_updates(struct dfsrsrv_service *service)
 	}
 
 	if (entry == NULL) {
+		struct dfsrsrv_vv_queue *vv_queue;
+		vv_queue = service->process_queue.current_vv;
+
 		/*
 		 * The pending update list for the first queue is traversed
 		 * and there is no install candidate. Check if the pending
 		 * updates queue is empty and has to be deleted
 		 */
-		if (service->process_queue.current_vv->pending_updates == NULL) {
+		if (vv_queue->pending_updates == NULL) {
+			/*
+			 * [MS-FRS2] 1.3 Clients can update their previously
+			 * saved version chain vector based on the server's
+			 * version chain vector after a completed
+			 * synchronization; that is, when all updates
+			 * pertaining to a version chain vector have been
+			 * processed and all file data that is required by a
+			 * client to synchronize with a server has been
+			 * downloaded.
+			 */
+
+			/*
+			 * If the queue only contains content set tombstones
+			 * for example or all updates are skipped, it is still
+			 * necessary to update the stored VV
+			 */
+			status = dfsrsrv_update_stored_vv(service,
+					service->dfsrdb,
+					vv_queue->set->group,
+					vv_queue->set,
+					vv_queue->vv,
+					vv_queue->vv_count);
+			if (!NT_STATUS_IS_OK(status)) {
+				DBG_ERR("Failed to update stored version "
+					"vector for replica set {%s} on "
+					"replication group {%s}: %s\n",
+					GUID_buf_string(&vv_queue->set->guid,
+							&txtguid1),
+					GUID_buf_string(
+						&vv_queue->set->group->guid,
+						&txtguid2),
+					nt_errstr(status));
+				return status;
+			}
+
 			DLIST_REMOVE(service->process_queue.pending_vv,
 				     service->process_queue.current_vv);
 			TALLOC_FREE(service->process_queue.current_vv);

@@ -41,4 +41,15 @@ NTSTATUS dfsr_db_fetch(struct dfsr_db *db_ctx,
 		uint64_t uid_version,
 		struct dfsr_db_record **record);
 
+NTSTATUS dfsr_db_store_vv(struct dfsr_db *db_ctx,
+		const struct GUID *group,
+		const struct GUID *set,
+		const struct dfsr_db_vv_record *record);
+
+NTSTATUS dfsr_db_fetch_vv(struct dfsr_db *db_ctx,
+		TALLOC_CTX *mem_ctx,
+		const struct GUID *group,
+		const struct GUID *set,
+		struct dfsr_db_vv_record **record);
+
 #endif /* _LIB_DFSR_DFSR_DB_H_ */

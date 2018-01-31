@@ -51,6 +51,12 @@ interface frsblobs
 	} dfsr_db_record;
 
 	typedef [public] struct {
+		[in] uint32 vv_count;
+		[in,size_is(vv_count)]
+			frstrans_VersionVector *vv;
+	} dfsr_db_vv_record;
+
+	typedef [public] struct {
 		[in,ref,charset(DOS),string] uint8 *staged_file;
 		[in,ref,charset(DOS),string] uint8 *installing_dir;
 		[in,ref,charset(DOS),string] uint8 *root_dir;

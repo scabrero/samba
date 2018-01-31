@@ -27,6 +27,7 @@
 #include <ldb_module.h>
 #include "dsdb/samdb/samdb.h"
 #include "util/dlinklist.h"
+#include "dfsr/dfsr_db.h"
 
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_DFSR
@@ -240,6 +241,26 @@ static NTSTATUS dfsrsrv_init_set_paths(TALLOC_CTX *mem_ctx,
 	return NT_STATUS_OK;
 }
 
+static NTSTATUS dfsrsrv_load_set_known_vv(struct dfsrsrv_service *service,
+					  struct dfsrsrv_content_set *set)
+{
+	NTSTATUS status;
+	struct dfsr_db_vv_record *record = NULL;
+
+	status = dfsr_db_fetch_vv(service->dfsrdb, set, &set->group->guid,
+				  &set->guid, &record);
+	if (NT_STATUS_EQUAL(NT_STATUS_NOT_FOUND, status)) {
+		set->known_vv = NULL;
+		set->known_vv_count = 0;
+		status = NT_STATUS_OK;
+	} else if (NT_STATUS_IS_OK(status)) {
+		set->known_vv = record->vv;
+		set->known_vv_count = record->vv_count;
+	}
+
+	return status;
+}
+
 static NTSTATUS dfsrsrv_refresh_group_content_sets(
 		TALLOC_CTX *mem_ctx,
 		struct dfsrsrv_service *service,
@@ -311,6 +332,8 @@ static NTSTATUS dfsrsrv_refresh_group_content_sets(
 		}
 
 		if (set == NULL) {
+			int j;
+
 			set = talloc_zero(group, struct dfsrsrv_content_set);
 			if (set == NULL) {
 				return NT_STATUS_NO_MEMORY;
@@ -387,6 +410,20 @@ static NTSTATUS dfsrsrv_refresh_group_content_sets(
 				return status;
 			}
 
+			status = dfsrsrv_load_set_known_vv(service, set);
+			if (!NT_STATUS_IS_OK(status)) {
+				DBG_ERR("Error fetching version "
+					"chain vector for replica set {%s} "
+					"on replica group {%s}: %s\n",
+					GUID_buf_string(&set->guid,
+					      	  &txtguid1),
+					GUID_buf_string(&set->group->guid,
+					      	  &txtguid2),
+					nt_errstr(status));
+				TALLOC_FREE(set);
+				return status;
+			}
+
 			DLIST_ADD_END(group->sets, set);
 
 			DBG_INFO("Found new subscription to content set "
@@ -394,6 +431,17 @@ static NTSTATUS dfsrsrv_refresh_group_content_sets(
 				 GUID_buf_string(&set->guid, &txtguid1),
 				 set->name,
 				 GUID_buf_string(&group->guid, &txtguid2));
+
+			DBG_INFO("Loaded version chain vector for set {%s}:\n",
+				  GUID_buf_string(&set->guid, &txtguid1));
+			for (j = 0; j < set->known_vv_count; j++) {
+				DBG_INFO("         {%s} [%lu - %lu]\n",
+					  GUID_buf_string(
+						&set->known_vv[j].db_guid,
+						&txtguid1),
+					  set->known_vv[j].low,
+					  set->known_vv[j].high);
+			}
 		}
 		set->enabled = ldb_msg_find_attr_as_bool(msg,
 			"msDFSR-Enabled", false);

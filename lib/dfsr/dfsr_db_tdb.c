@@ -39,6 +39,11 @@ struct dfsr_key {
 	uint64_t version;
 };
 
+struct vv_key {
+	struct GUID group;
+	struct GUID set;
+};
+
 static int dfsr_db_destructor(struct dfsr_db *db);
 
 /**
@@ -184,6 +189,113 @@ NTSTATUS dfsr_db_fetch(struct dfsr_db *db_ctx,
 	}
 
 	status = NT_STATUS_OK;
+out:
+	SAFE_FREE(tdata.dptr);
+
+	return status;
+}
+
+NTSTATUS dfsr_db_store_vv(struct dfsr_db *db_ctx,
+		const struct GUID *group,
+		const struct GUID *set,
+		const struct dfsr_db_vv_record *record)
+{
+	TALLOC_CTX *frame;
+	struct tdb_context *tdb = db_ctx->store->tdb;
+	struct vv_key key;
+	TDB_DATA tkey = tdb_null;
+	TDB_DATA tdata = tdb_null;
+	DATA_BLOB blob = data_blob_null;
+	NTSTATUS status;
+	enum ndr_err_code ndr_err;
+
+	if (record == NULL) {
+		return NT_STATUS_INVALID_PARAMETER;
+	}
+
+	frame = talloc_stackframe();
+	if (frame == NULL) {
+		return NT_STATUS_NO_MEMORY;
+	}
+
+	key.group = *group;
+	key.set = *set;
+	tkey = make_tdb_data((const uint8_t *)&key, sizeof(struct vv_key));
+
+	ndr_err = ndr_push_struct_blob(&blob, frame, record,
+			(ndr_push_flags_fn_t)ndr_push_dfsr_db_vv_record);
+	if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
+		DBG_ERR("Failed ndr push: %s\n", ndr_errstr(ndr_err));
+		status = ndr_map_error2ntstatus(ndr_err);
+		goto out;
+	}
+
+	tdata = make_tdb_data(blob.data, blob.length);
+	if (tdb_store(tdb, tkey, tdata, TDB_REPLACE)) {
+		status = map_nt_error_from_tdb(tdb_error(tdb));
+	} else {
+		status = NT_STATUS_OK;
+	}
+out:
+	TALLOC_FREE(frame);
+
+	return status;
+}
+
+NTSTATUS dfsr_db_fetch_vv(struct dfsr_db *db_ctx,
+		TALLOC_CTX *mem_ctx,
+		const struct GUID *group,
+		const struct GUID *set,
+		struct dfsr_db_vv_record **record)
+{
+	struct tdb_context *tdb = db_ctx->store->tdb;
+	TDB_DATA tkey = tdb_null;
+	TDB_DATA tdata = tdb_null;
+	DATA_BLOB blob = data_blob_null;
+	struct vv_key key;
+	enum ndr_err_code ndr_err;
+	NTSTATUS status;
+
+	if (record == NULL) {
+		return NT_STATUS_INVALID_PARAMETER;
+	}
+
+	key.group = *group;
+	key.set = *set;
+
+	tkey = make_tdb_data((const uint8_t *)&key, sizeof(struct vv_key));
+	tdata = tdb_fetch(tdb, tkey);
+	if (tdata.dptr == NULL) {
+		/* Key not found */
+		*record = NULL;
+		status = NT_STATUS_NOT_FOUND;
+		goto out;
+	}
+	if (tdata.dsize == 0) {
+		/* Key exists but no data attached */
+		*record = NULL;
+		status = NT_STATUS_NOT_FOUND;
+		goto out;
+	}
+
+	*record = talloc_zero(mem_ctx, struct dfsr_db_vv_record);
+	if (*record == NULL) {
+		status = NT_STATUS_NO_MEMORY;
+		goto out;
+	}
+
+	blob = data_blob_const(tdata.dptr, tdata.dsize);
+	ndr_err = ndr_pull_struct_blob(&blob, mem_ctx, *record,
+			(ndr_pull_flags_fn_t)ndr_pull_dfsr_db_vv_record);
+	if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
+		DBG_ERR("Failed ndr pull: %s\n", ndr_errstr(ndr_err));
+		TALLOC_FREE(*record);
+		status = ndr_map_error2ntstatus(ndr_err);
+		goto out;
+	}
+
+	status = NT_STATUS_OK;
+
 out:
 	SAFE_FREE(tdata.dptr);
 

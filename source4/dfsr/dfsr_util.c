@@ -23,6 +23,7 @@
 
 #include "includes.h"
 #include "dfsr/dfsr_service.h"
+#include "dfsr/dfsr_db.h"
 
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_DFSR
@@ -77,6 +78,76 @@ NTSTATUS dfsrsrv_update_known_vv(struct dfsrsrv_content_set *set,
 	}
 
 	return NT_STATUS_OK;
+}
+
+NTSTATUS dfsrsrv_update_stored_vv(TALLOC_CTX *mem_ctx,
+				  struct dfsr_db *dfsrdb,
+				  struct dfsrsrv_replication_group *group,
+				  struct dfsrsrv_content_set *set,
+				  struct frstrans_VersionVector *vv,
+				  uint32_t vv_count)
+{
+	struct dfsr_db_vv_record *stored = NULL;
+	struct dfsr_db_vv_record *merged = NULL;
+	int i;
+	struct GUID_txt_buf txtguid1, txtguid2;
+	NTSTATUS status;
+
+	/* Fetch the stored known VV */
+	status = dfsr_db_fetch_vv(dfsrdb, mem_ctx, &group->guid,
+			&set->guid, &stored);
+	if (NT_STATUS_EQUAL(NT_STATUS_NOT_FOUND, status)) {
+		/* Nothing stored for this set yet */
+		stored = talloc_zero(mem_ctx, struct dfsr_db_vv_record);
+		if (stored == NULL) {
+			return NT_STATUS_NO_MEMORY;
+		}
+	} else if (!NT_STATUS_IS_OK(status)) {
+		DBG_ERR("Error fetching stored version vectors for "
+			"replica set {%s} on replica group {%s}: %s\n",
+			GUID_buf_string(&set->guid, &txtguid1),
+			GUID_buf_string(&group->guid, &txtguid2),
+			nt_errstr(status));
+		return status;
+	}
+
+	merged = talloc_zero(mem_ctx, struct dfsr_db_vv_record);
+	if (merged == NULL) {
+		status = NT_STATUS_NO_MEMORY;
+		goto out;
+	}
+
+	/* Merge the stored set known version chain vectors with
+	 * the just processed one */
+	status = dfsrsrv_merge_vv(mem_ctx, stored->vv, stored->vv_count,
+			vv, vv_count, &merged->vv, &merged->vv_count);
+
+	DBG_INFO("Updating stored content set {%s} known version vectors "
+		 "to:\n", GUID_buf_string(&set->guid, &txtguid1));
+	for (i = 0; i < merged->vv_count; i++) {
+		DBG_INFO("\t{%s} - [%lu, %lu]\n",
+			 GUID_buf_string(&merged->vv[i].db_guid, &txtguid1),
+			 merged->vv[i].low,
+			 merged->vv[i].high);
+	}
+
+	/* Store the merged vectors */
+	status = dfsr_db_store_vv(dfsrdb, &group->guid, &set->guid, merged);
+	if (!NT_STATUS_IS_OK(status)) {
+		DBG_ERR("Error storing version vectors for replica "
+			"set {%s} on replica group {%s}: %s\n",
+			GUID_buf_string(&set->guid, &txtguid1),
+			GUID_buf_string(&group->guid, &txtguid2),
+			nt_errstr(status));
+		goto out;
+	}
+
+	status = NT_STATUS_OK;
+out:
+	TALLOC_FREE(stored);
+	TALLOC_FREE(merged);
+
+	return status;
 }
 
 NTSTATUS dfsrsrv_calculate_delta_vectors(TALLOC_CTX *mem_ctx,
@@ -242,6 +313,79 @@ NTSTATUS dfsrsrv_vv_copy(TALLOC_CTX *mem_ctx,
 	}
 
 	*out = tmp;
+
+	return NT_STATUS_OK;
+}
+
+NTSTATUS dfsrsrv_merge_vv(TALLOC_CTX *mem_ctx,
+			  struct frstrans_VersionVector *vv1,
+			  uint32_t vv1_count,
+			  struct frstrans_VersionVector *vv2,
+			  uint32_t vv2_count,
+			  struct frstrans_VersionVector **out,
+			  uint32_t *out_count)
+{
+	struct frstrans_VersionVector *tmp = NULL;
+	uint32_t tmp_count = 0;
+	int i, j;
+
+	if (out == NULL || out_count == NULL) {
+		return NT_STATUS_INVALID_PARAMETER;
+	}
+
+	/* Copy the first */
+	if (vv1 != NULL && vv1_count > 0) {
+		for (i = 0; i < vv1_count; i++) {
+			tmp = talloc_realloc(mem_ctx, tmp,
+					     struct frstrans_VersionVector,
+					     tmp_count + 1);
+			if (tmp == NULL) {
+				return NT_STATUS_NO_MEMORY;
+			}
+			tmp[tmp_count].db_guid = vv1[i].db_guid;
+			tmp[tmp_count].low = vv1[i].low;
+			tmp[tmp_count].high = vv1[i].high;
+			tmp_count += 1;
+		}
+	}
+
+	/* Merge the second */
+	if (vv2 != NULL && vv2_count > 0) {
+		for (i = 0; i < vv2_count; i++) {
+			bool found = false;
+
+			for (j = 0; j < tmp_count; j++) {
+				if (memcmp(&vv2[i].db_guid, &tmp[j].db_guid,
+						sizeof(struct GUID)) == 0) {
+					/* GUID match */
+					if (vv2[i].low < tmp[j].low) {
+						tmp[j].low = vv2[i].low;
+					}
+					if (vv2[i].high > tmp[j].high) {
+						tmp[j].high = vv2[i].high;
+					}
+					found = true;
+					break;
+				}
+			}
+
+			if (!found) {
+				tmp = talloc_realloc(mem_ctx, tmp,
+					     struct frstrans_VersionVector,
+					     tmp_count + 1);
+				if (tmp == NULL) {
+					return NT_STATUS_NO_MEMORY;
+				}
+				tmp[tmp_count].db_guid = vv2[i].db_guid;
+				tmp[tmp_count].low = vv2[i].low;
+				tmp[tmp_count].high = vv2[i].high;
+				tmp_count += 1;
+			}
+		}
+	}
+
+	*out = tmp;
+	*out_count = tmp_count;
 
 	return NT_STATUS_OK;
 }
