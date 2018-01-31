@@ -27,6 +27,7 @@
 #include "source4/lib/messaging/messaging.h"
 #include "source4/lib/messaging/irpc.h"
 #include "gen_ndr/ndr_frsblobs.h"
+#include "gen_ndr/ndr_security.h"
 #include "dfsr/dfsr_db.h"
 #include "system/filesys.h"
 #include "lib/compression/lzhuff_xpress.h"
@@ -497,6 +498,50 @@ out:
 	return status;
 }
 
+static NTSTATUS dfsr_meet_stream_security(TALLOC_CTX *mem_ctx,
+		struct connection_struct *conn,
+		int fd_in,
+		struct dfsr_stream_header *header,
+		struct files_struct *fsp,
+		off_t *offset)
+{
+	NTSTATUS status;
+	TALLOC_CTX *tmp_ctx;
+	DATA_BLOB in;
+	ssize_t nread;
+	enum ndr_err_code ndr_err;
+	struct security_descriptor sd;
+
+	DBG_DEBUG("Unmarshalling security stream\n");
+
+	tmp_ctx = talloc_new(mem_ctx);
+	if (tmp_ctx == NULL) {
+		return NT_STATUS_NO_MEMORY;
+	}
+
+	in = data_blob_talloc_zero(tmp_ctx, header->block_size);
+	nread = read(fd_in, in.data, header->block_size);
+	*offset += nread;
+
+	ndr_err = ndr_pull_struct_blob(&in, tmp_ctx, &sd,
+			(ndr_pull_flags_fn_t)ndr_pull_security_descriptor);
+	data_blob_free(&in);
+	if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
+		DBG_ERR("Failed to pull security stream: %s\n",
+			ndr_errstr(ndr_err));
+		status = ndr_map_error2ntstatus(ndr_err);
+		goto out;
+	}
+
+	status = SMB_VFS_FSET_NT_ACL(fsp, SECINFO_OWNER | SECINFO_GROUP |
+			SECINFO_DACL, &sd);
+
+out:
+	TALLOC_FREE(tmp_ctx);
+
+	return status;
+}
+
 static NTSTATUS dfsr_meet_unmarshal(TALLOC_CTX *mem_ctx,
 				    struct dfsr_db *db_ctx,
 				    const struct frstrans_Update *update,
@@ -570,10 +615,13 @@ static NTSTATUS dfsr_meet_unmarshal(TALLOC_CTX *mem_ctx,
 			}
 			break;
 		case MS_TYPE_SECURITY_DATA:
-			// TODO Write security descriptor
-
-			offset += streamhdr.block_size;
-
+			status = dfsr_meet_stream_security(mem_ctx, conn,
+					fd_in, &streamhdr, fsp, &offset);
+			if (!NT_STATUS_IS_OK(status)) {
+				DBG_ERR("Failed to handle security "
+					"stream: %s\n", nt_errstr(status));
+				goto out;
+			}
 			break;
 		case MS_TYPE_FLAT_DATA:
 		{
