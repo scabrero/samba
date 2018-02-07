@@ -27,6 +27,8 @@
 #include "lib/events/events.h"
 #include "util/tevent_ntstatus.h"
 #include "util/dlinklist.h"
+#include "dfsr/dfsr_db.h"
+#include "librpc/gen_ndr/ndr_fscc.h"
 
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_DFSR
@@ -382,16 +384,141 @@ static NTSTATUS dfsrsrv_process_check_installed(
 		struct GUID *guid,
 		uint64_t version)
 {
-	/* TODO */
-	return NT_STATUS_OK;
+	NTSTATUS status;
+	struct dfsr_db_record *rec;
+
+	status = dfsr_db_fetch(service->dfsrdb, mem_ctx, guid, version,
+			       &rec);
+	if (!NT_STATUS_IS_OK(status)) {
+		return status;
+	}
+
+	TALLOC_FREE(rec);
+
+	return status;
 }
 
 static bool dfsrsrv_process_check_superseded(TALLOC_CTX *mem_ctx,
 					     struct dfsrsrv_service *service,
 					     struct frstrans_Update *current)
 {
-	/* TODO */
-	return false;
+	struct dfsr_db_record *record = NULL;
+	struct frstrans_Update *stored = NULL;
+	bool superseded = false;
+	NTSTATUS status;
+
+	status = dfsr_db_fetch(service->dfsrdb, mem_ctx, &current->uid_db_guid,
+			       current->uid_version, &record);
+	if (NT_STATUS_IS_OK(status)) {
+		uint32_t stored_folder_attr;
+		uint32_t current_folder_attr;
+		int res;
+
+		stored = record->update;
+
+		/* An update with a higher value of fence supersedes updates
+		 * with lower fence values; otherwise, the fence values are
+		 * equal. */
+		if (stored->fence != current->fence) {
+			superseded = (stored->fence > current->fence);
+			goto out;
+		}
+
+		/* An update with the directory attribute set in the attributes
+		 * field supersedes updates that do not have the directory
+		 * attribute set; otherwise, these attributes coincide. */
+		stored_folder_attr = (stored->attributes &
+				      FSCC_FILE_ATTRIBUTE_DIRECTORY);
+		current_folder_attr = (current->attributes &
+				       FSCC_FILE_ATTRIBUTE_DIRECTORY);
+		if (stored_folder_attr != current_folder_attr) {
+			superseded = (current_folder_attr &&
+				      !stored_folder_attr);
+			goto out;
+		}
+
+		/* An update with a higher value of the createTime supersedes
+		 * updates with lower values, otherwise, the create times are
+		 * the same. */
+		if (stored->create_time != current->create_time) {
+			superseded = (stored->create_time >
+				      current->create_time);
+			goto out;
+		}
+
+		/* An update with a higher value of the clock field supersedes
+		 * updates with a lower value; otherwise, the clock fields are
+		 * the same */
+		if (stored->clock != current->clock) {
+			superseded = (stored->clock > current->clock);
+			goto out;
+		}
+
+		/* An update with the lexicographically highest uidDbGuid
+		 * supersedes one with a lower value. GUIDs are compared using
+		 * a lexicographic left-to-right comparison of each byte, where
+		 * each byte is treated as an unsigned 8-bit number. If the
+		 * uidDbGuid coincide, comparison proceeds to version numbers */
+		res = memcmp(&stored->uid_db_guid, &current->uid_db_guid,
+			     sizeof(struct GUID));
+		if (res != 0) {
+			superseded = (res > 0);
+			goto out;
+		}
+
+		/* An update with the largest value of uidVersion supersedes an
+		 * update with a lower value of uidVersion. Otherwise, the
+		 * versions are the same */
+		if (stored->uid_version != current->uid_version) {
+			superseded = (stored->uid_version >
+				      current->uid_version);
+			goto out;
+		}
+
+		/* An update with the lexicographically largest gvsnDbGuid
+		 * supersedes one with a lower value; otherwise, the GUIDs are
+		 * the same */
+		res = memcmp(&stored->gsvn_db_guid, &current->gsvn_db_guid,
+			     sizeof(struct GUID));
+		if (res != 0) {
+			superseded = (res > 0);
+			goto out;
+		}
+
+		/* An update with the largest gvsnVersion supersedes an update
+		 * with a lower gvsnVersion; otherwise, the two updates have
+		 * the same GVSN, which a well-behaved implementation of DFS-R
+		 * would allow only if the updates are in fact identical. */
+		if (stored->gsvn_version != current->gsvn_version) {
+			superseded = (stored->gsvn_version >=
+				      current->gsvn_version);
+			goto out;
+		}
+
+		/* Otherwise, the updates are equal. Set as superseeded to
+		 * avoid installing the same update. */
+		superseded = true;
+	}
+
+out:
+	if (superseded) {
+		struct GUID_txt_buf guid1, guid2;
+		char *superseded_txt, *superseding_txt;
+		superseded_txt = talloc_asprintf(mem_ctx, "{%s-v%lu}",
+				GUID_buf_string(&current->gsvn_db_guid, &guid1),
+				current->gsvn_version);
+		superseding_txt = talloc_asprintf(mem_ctx, "{%s-v%lu}",
+				GUID_buf_string(&stored->gsvn_db_guid, &guid2),
+				stored->gsvn_version);
+		DBG_DEBUG("Update %s superseded by %s\n",
+			  superseded_txt, superseding_txt);
+		TALLOC_FREE(superseding_txt);
+		TALLOC_FREE(superseded_txt);
+	}
+
+	TALLOC_FREE(record);
+
+	return superseded;
 }
 
 NTSTATUS dfsrsrv_process_updates(struct dfsrsrv_service *service)
