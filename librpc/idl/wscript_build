@@ -95,6 +95,7 @@ bld.SAMBA_PIDL_LIST('PIDL',
                     dbgidl.idl
                     dsbackup.idl
                     efs.idl
+                    frsblobs.idl
                     frsrpc.idl
                     keysvc.idl
                     msgsvc.idl

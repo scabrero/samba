@@ -1,0 +1,51 @@
+#include "idl_types.h"
+
+import "file_id.idl";
+import "frstrans.idl";
+
+/* FRS and DFS-R related blobs decoding */
+
+[
+	pointer_default(unique),
+	helpstring("dfsr blobs"),
+	uuid("12345777-1234-abcd-0001-00000004")
+]
+
+interface frsblobs
+{
+	typedef [public] struct {
+		/* Just as reference, windows seems to store these fields:
+		 * fid
+		 * usn
+		 * uidVisible
+		 * filtered
+		 * journalWrapped
+		 * slowRecoverCheck
+		 * pendingTombstone
+		 * internalUpdate
+		 * dirtyShutdownMismatch
+		 * meetInstallUpdate
+		 * meetReanimated
+		 * recUpdateTime
+		 * present
+		 * nameConflict
+		 * attributes
+		 * ghostedHeader
+		 * data
+		 * gvsn
+		 * uid
+		 * parent
+		 * fence
+		 * clockDecrementedInDirtyShutdown
+		 * clock
+		 * createTime
+		 * csId
+		 * hash
+		 * similarity
+		 * name
+		 */
+		file_id fid;
+		boolean32 meet_installed;
+		frstrans_Update *update;
+	} dfsr_db_record;
+}

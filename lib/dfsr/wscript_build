@@ -1,0 +1,9 @@
+
+bld.SAMBA_LIBRARY('dfsrdb',
+                  source='dfsr_db_tdb.c',
+                  deps='''tdb tdb-wrap util_tdb ndr
+                          NDR_FRSTRANS NDR_FILE_ID
+                          NDR_BKUPBLOBS NDR_FRSBLOBS
+                          NDR_FRSRPC NDR_FSCC NDR_SECURITY''',
+                  private_library=True
+                  )
