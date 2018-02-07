@@ -30,6 +30,7 @@
 #include "param/param.h"
 #include "libds/common/roles.h"
 #include "dfsr/dfsr_service.h"
+#include "dfsr/dfsr_db.h"
 
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_DFSR
@@ -51,6 +52,11 @@ static NTSTATUS dfsrsrv_connect_dbs(struct dfsrsrv_service *service,
 				lp_ctx, service->system_session_info, NULL, 0);
 	if (service->samdb == NULL) {
 		return NT_STATUS_DS_UNAVAILABLE;
+	}
+
+	service->dfsrdb = dfsr_db_init(service, lpcfg_state_directory(lp_ctx));
+	if (service->dfsrdb == NULL) {
+		return NT_STATUS_SERVER_UNAVAILABLE;
 	}
 
 	return NT_STATUS_OK;

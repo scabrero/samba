@@ -12,7 +12,7 @@ bld.SAMBA_MODULE('service_dfsr',
 	autoproto='dfsr_service_proto.h',
 	subsystem='service',
 	init_function='server_service_dfsr_init',
-	deps='samdb process_model RPC_NDR_FRSTRANS',
+	deps='samdb process_model RPC_NDR_FRSTRANS dfsrdb',
 	internal_module=False,
 	enabled=bld.AD_DC_BUILD_IS_ENABLED()
 	)

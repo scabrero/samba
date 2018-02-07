@@ -29,6 +29,7 @@
 #define REPLICA_GROUP_TYPE_SYSVOL	1
 
 struct ldb_dn;
+struct dfsr_db;
 
 enum dfsr_connection_state {
 	CONNECTION_STATE_DISCONNECTED,
@@ -151,6 +152,9 @@ struct dfsrsrv_service {
 
 	/* a connection to the local samdb */
 	struct ldb_context *samdb;
+
+	/* a connection to the dfsr db */
+	struct dfsr_db *dfsrdb;
 
 	/* some stuff for periodic processing */
 	struct {
