@@ -545,6 +545,77 @@ static PyObject *py_close_file(PyObject *self, PyObject *args, PyObject *kwargs)
 	Py_RETURN_NONE;
 }
 
+/*
+ * Write data to the file based on the fnum passed in
+ */
+static PyObject *py_write_file(PyObject *self, PyObject *args, PyObject *kwargs)
+{
+	struct smb_private_data *spdata;
+	int fnum;
+	uint64_t offset;
+	uint8_t *data;
+	uint32_t len;
+	union smb_write params;
+	uint32_t nwritten;
+	NTSTATUS status;
+
+	if (!PyArg_ParseTuple(args, "iKs#:write_file", &fnum, &offset, &data, &len)) {
+		return NULL;
+	}
+
+	spdata = pytalloc_get_ptr(self);
+
+	ZERO_STRUCT(params);
+	params.generic.level = RAW_WRITE_WRITEX;
+	params.writex.in.file.fnum = fnum;
+	params.writex.in.offset = offset;
+	params.writex.in.wmode = 1;
+	params.writex.in.remaining = 0;
+	params.writex.in.count = len;
+	params.writex.in.data = data;
+
+	status = smb_raw_write(spdata->tree, &params);
+	PyErr_NTSTATUS_IS_ERR_RAISE(status);
+
+	nwritten = params.writex.out.nwritten;
+
+	return Py_BuildValue("I", nwritten);
+}
+
+static PyObject *py_rename(PyObject *self, PyObject *args)
+{
+	NTSTATUS status;
+	const char *src, *dst;
+	struct smb_private_data *spdata;
+
+	if (!PyArg_ParseTuple(args, "ss:rename", &src, &dst)) {
+		return NULL;
+	}
+
+	spdata = pytalloc_get_ptr(self);
+	status = smbcli_rename(spdata->tree, src, dst);
+	PyErr_NTSTATUS_IS_ERR_RAISE(status);
+
+	Py_RETURN_NONE;
+}
+
+static PyObject *py_unlink(PyObject *self, PyObject *args)
+{
+	NTSTATUS status;
+	const char *filename;
+	struct smb_private_data *spdata;
+
+	if (!PyArg_ParseTuple(args, "s:unlink", &filename)) {
+		return NULL;
+	}
+
+	spdata = pytalloc_get_ptr(self);
+	status = smbcli_unlink(spdata->tree, filename);
+	PyErr_NTSTATUS_IS_ERR_RAISE(status);
+
+	Py_RETURN_NONE;
+}
+
 static PyMethodDef py_smb_methods[] = {
 	{ "loadfile", py_smb_loadfile, METH_VARARGS,
 		"loadfile(path) -> file contents as a "
@@ -592,7 +663,16 @@ FILE_ATTRIBUTE_ARCHIVE\n\n \
 		Open a file. Throws NTSTATUS exceptions on errors." },
 	{ "close_file", (PyCFunction)py_close_file, METH_VARARGS,
 		"close_file(fnum) -> None\n\n \
-		Close the file based on fnum."},
+		Close the file based on fnum." },
+	{ "write_file", (PyCFunction)py_write_file, METH_VARARGS,
+		"write_file(fnum, data) -> None\n\n \
+		Write data to file based on fnum." },
+	{ "rename", (PyCFunction)py_rename, METH_VARARGS,
+		"rename(path, path) -> None\n\n \
+		Move or rename a file or directory."},
+	{ "unlink", (PyCFunction)py_unlink, METH_VARARGS,
+		"unlink(path) -> None\n\n \
+		Delete a file" },
 	{ NULL },
 };
 
