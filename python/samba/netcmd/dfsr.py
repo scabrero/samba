@@ -216,6 +216,60 @@ class cmd_dfsr_folder_list(DfsrCommand):
                                  folder_name=folder_name)
         return
 
+class cmd_dfsr_folder_create(DfsrCommand):
+    """Create a new DFS-R folder."""
+
+    synopsis = "%prog <group_name> <folder_name> [options]"
+
+    takes_args = ["group_name", "folder_name"]
+
+    takes_optiongroups = {
+        "sambaopts": options.SambaOptions,
+        "credopts": options.CredentialsOptions,
+        "versionopts": options.VersionOptions,
+    }
+
+    takes_options = [
+        Option("-H", "--URL", help="LDB URL for database or target server",
+               type=str, metavar="URL", dest="H"),
+        Option("--description", help="Folder's description",
+               type=str, dest="description"),
+        Option("--file-filter", help="A comma-separated list of 0 or more "
+                                     "wildcard file name filters. Any file "
+                                     "whose name matches any of the filters "
+                                     "will be excluded from replication. The "
+                                     "value should contain, at a minimum, "
+                                     "'*.tmp,*.bak, ~*'",
+               type=str, dest="file_filter"),
+        Option("--directory-filter", help="A comma-separated list of 0 or "
+                                          "more wildcard folder name filters. "
+                                          "Any folder whose name matches any "
+                                          "of the filters will be excluded "
+                                          "from replication.",
+               type=str, dest="directory_filter"),
+       ]
+
+    def run(self, group_name, folder_name, description=None, file_filter=None,
+            directory_filter=None, credopts=None, sambaopts=None,
+            versionopts=None, H=None):
+        lp = sambaopts.get_loadparm()
+        creds = credopts.get_credentials(lp, fallback_machine=True)
+        self.samdb = SamDB(url=H, session_info=system_session(),
+                           credentials=creds, lp=lp)
+
+        try:
+            self.samdb.dfsr_folder_create(group_name, folder_name,
+                                          description=description,
+                                          file_filter=file_filter,
+                                          directory_filter=directory_filter)
+        except Exception as e:
+            raise CommandError('Failed to create replicated folder "%s"' %
+                               folder_name, e)
+        self.print_group_folders(group_name=group_name,
+                                 folder_name=folder_name)
+        return
+
+
 class cmd_dfsr_group(SuperCommand):
     """DFS Replication (DFS-R) group management."""
 
@@ -228,6 +282,7 @@ class cmd_dfsr_folder(SuperCommand):
 
     subcommands = {}
     subcommands["list"] = cmd_dfsr_folder_list()
+    subcommands["create"] = cmd_dfsr_folder_create()
 
 class cmd_dfsr(SuperCommand):
     """DFS Replication (DFS-R) management"""

@@ -1579,7 +1579,73 @@ schemaUpdateNow: 1
             raise
         else:
             self.transaction_commit()
+        return
 
+    def dfsr_folder_create(self, group_name, folder_name, description=None,
+                           file_filter=None, directory_filter=None):
+        """Creates a DFS-R replicated folder
+        :param group_name: The replication group
+        :param folder_name: The replicated folder name
+        :param description: The replicated folder description
+        :param file_filter: A comma separated list of 0 or more wildcard file
+        name filters. Any file matching any of the filters will be excluded
+        from replication. The value of this attribute must contain at minimum
+        "*.tmp,*.bak,~*"
+        :param directory_filter: A comma separated list of 0 or more wilcard
+        folder name filters. Any folder matching any of the filters will be
+        excluded from replication.
+        """
+
+        base_dn = "CN=DFSR-GlobalSettings,CN=System,%s" % self.domain_dn()
+        search_filter = "(&(objectClass=msDFSR-ReplicationGroup)(name=%s))" % (
+                        group_name)
+        res = self.search(base_dn, scope=ldb.SCOPE_SUBTREE,
+                          expression=search_filter, attrs=[])
+        if (len(res) == 0):
+            raise Exception('Unable to find group "%s"' % group_name)
+
+        assert (len(res) == 1)
+
+        group_dn = res[0].dn
+
+        res = self.search(group_dn, scope=ldb.SCOPE_SUBTREE,
+                          expression="(objectClass=msDFSR-Content)",
+                          attrs=[])
+        if (len(res) == 0):
+            raise Exception('Unable to find content container"')
+
+        assert(len(res) == 1)
+
+        content_dn = res[0].dn
+
+        search_filter = "(&(objectClass=msDFSR-Content)(name=%s))" % (
+                        folder_name)
+        res = self.search(content_dn, scope=ldb.SCOPE_SUBTREE,
+                          expression=search_filter, attrs=[])
+
+        if (len(res) > 0):
+            raise Exception('The replicated folder "%s" already exists' %
+                            (folder_name))
+
+        folder_dn = "CN=%s,%s" % (folder_name, content_dn)
+
+        if file_filter is None:
+            file_filter = "*.bak,*tmp,~*"
+
+        m = {"dn": folder_dn,
+             "objectClass": "msDFSR-ContentSet",
+             "name": folder_name}
+
+        if description:
+            m["description"] = description
+
+        if file_filter:
+            m["msDFSR-FileFilter"] = file_filter
+
+        if directory_filter:
+            m["msDFSR-DirectoryFilter"] = directory_filter
+
+        self.add(m)
         return
 
 class dsdb_Dn(object):
