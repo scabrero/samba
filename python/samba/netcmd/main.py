@@ -63,6 +63,7 @@ class cmd_sambatool(SuperCommand):
     subcommands["delegation"] = None
     subcommands["dns"] = None
     subcommands["domain"] = None
+    subcommands["dfsr"] = None
     subcommands["drs"] = None
     subcommands["dsacl"] = None
     subcommands["forest"] = None
