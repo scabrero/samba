@@ -20,9 +20,12 @@ import samba.getopt as options
 import ldb
 from samba.samdb import SamDB
 from samba.auth import system_session
+from samba.ndr import ndr_unpack, ndr_pack, ndr_print
+from samba.dcerpc import misc
 from samba.netcmd import (
     SuperCommand,
     Command,
+    CommandError,
     Option,
     )
 from operator import attrgetter
@@ -96,11 +99,50 @@ class cmd_dfsr_group_list(DfsrCommand):
 
         self.print_group(group_name=group_name)
 
+class cmd_dfsr_group_create(DfsrCommand):
+    """Create a new DFS-R group."""
+
+    synopsis = "%prog <group_name> [options]"
+
+    takes_args = ["group_name"]
+
+    takes_optiongroups = {
+        "sambaopts": options.SambaOptions,
+        "credopts": options.CredentialsOptions,
+        "versionopts": options.VersionOptions,
+    }
+
+    takes_options = [
+        Option("-H", "--URL", help="LDB URL for database or target server",
+               type=str, metavar="URL", dest="H"),
+        Option("--type", help="Replication group type",
+               type=int, dest="group_type", default=0),
+        Option("--description", help="Group's description",
+               type=str, dest="description"),
+       ]
+
+    def run(self, group_name, group_type=0, credopts=None, sambaopts=None,
+            versionopts=None, H=None, description=None):
+        lp = sambaopts.get_loadparm()
+        creds = credopts.get_credentials(lp, fallback_machine=True)
+        self.samdb = SamDB(url=H, session_info=system_session(),
+                           credentials=creds, lp=lp)
+
+        try:
+            self.samdb.dfsr_group_create(group_name, group_type=group_type,
+                                         description=description)
+            self.print_group(group_name=group_name)
+        except Exception as e:
+            raise CommandError('Failed to create replication group "%s"' %
+                               group_name, e)
+        return
+
 class cmd_dfsr_group(SuperCommand):
     """DFS Replication (DFS-R) group management."""
 
     subcommands = {}
     subcommands["list"] = cmd_dfsr_group_list()
+    subcommands["create"] = cmd_dfsr_group_create()
 
 class cmd_dfsr(SuperCommand):
     """DFS Replication (DFS-R) management"""

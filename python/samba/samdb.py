@@ -1524,6 +1524,64 @@ schemaUpdateNow: 1
             full_dn.add_base(domain_dn)
         return full_dn
 
+    def dfsr_group_create(self, group_name, group_type=None, description=None,
+                          sd=None):
+        """Creates a DFS-R group object
+        :param group_name: name atttribute
+        :param group_type: msDFSR-ReplicationGroupType atttribute
+        :param description: description attribute
+        :param sd: security descriptor of the object, can be
+        an SDDL string or security.descriptor type
+        """
+        search_filter = "(&(objectClass=msDFSR-ReplicationGroup)(name=%s))" % (
+                        group_name)
+        base_dn = "CN=DFSR-GlobalSettings,CN=System,%s" % self.domain_dn()
+        res = self.search(base_dn, scope=ldb.SCOPE_SUBTREE,
+                           expression=search_filter, attrs=[])
+
+        if (len(res) > 0):
+            raise Exception('The replication group "%s" already exists' %
+                            (group_name))
+
+        if group_type is None:
+            group_type = 0
+        group_type = str(group_type)
+
+        group_dn = "CN=%s,CN=DFSR-GlobalSettings,CN=System,%s" % (
+                   group_name, self.domain_dn())
+        m = {"dn": group_dn,
+             "objectClass": "msDFSR-ReplicationGroup",
+             "name": group_name,
+             "msDFSR-ReplicationGroupType": group_type,
+             "msDFSR-TombstoneExpiryInMin": "86400"}
+
+        if description:
+            m["description"] = description
+
+        if sd:
+            m["nTSecurityDescriptor"] = ndr_pack(sd)
+
+        self.transaction_start()
+        try:
+            self.add(m)
+
+            content_dn = "CN=Content,%s" % group_dn
+            m = {"dn": content_dn,
+                 "objectClass": "msDFSR-Content"}
+            self.add(m)
+
+            topology_dn = "CN=Topology,%s" % group_dn
+            m = {"dn": topology_dn,
+                 "objectClass": "msDFSR-Topology"}
+            self.add(m)
+        except:
+            self.transaction_cancel()
+            raise
+        else:
+            self.transaction_commit()
+
+        return
+
 class dsdb_Dn(object):
     '''a class for binary DN'''
 
