@@ -118,6 +118,89 @@ class DfsrCommand(Command):
             self.print_folder(group_msg, folder_name=folder_name)
         return
 
+    def print_group_member(self, group_msg, topology_msg, member_msg,
+                           computer_msg):
+        # Search inbound connections
+        sfilter = "(objectClass=msDFSR-Connection)"
+        res = self.samdb.search(member_msg.dn, scope=ldb.SCOPE_SUBTREE,
+                                expression=sfilter,
+                                attrs=[])
+        inbound_conn = len(res)
+
+        # Search outbound connections
+        sfilter = "(&(objectClass=msDFSR-Connection)" \
+                  "(fromServer=%s))" % member_msg.dn
+        res = self.samdb.search(topology_msg.dn, scope=ldb.SCOPE_SUBTREE,
+                                expression=sfilter,
+                                attrs=[])
+        outbound_conn = len(res)
+
+        self.outf.write("%-20s : %s\n" % ("Group Name",
+            str(group_msg.get('name'))))
+        self.outf.write("%-20s : %s\n" % ("Computer Name",
+            str(computer_msg.get('name'))))
+        self.outf.write("%-20s : %s\n" % ("Domain", self.samdb.domain_dns_name()))
+        self.outf.write("%-20s : %s\n" % ("Identifier",
+            ndr_unpack(misc.GUID, member_msg.get("objectGUID", idx=0))))
+        self.outf.write("%-20s : %s\n" %
+                ("Description", str(member_msg.get("msDFSR-Keywords"))))
+        self.outf.write("%-20s : %s\n" %
+                ("Dns Name", str(computer_msg.get("dNSHostName", idx=0))))
+        self.outf.write("%-20s : %s\n" %
+                ("Inbound connections", inbound_conn))
+        self.outf.write("%-20s : %s\n" %
+                ("Outbound connections", outbound_conn))
+        self.outf.write("\n")
+
+    def print_group_members(self, group_msg, computer_name=None):
+        # Search topology
+        sfilter = "(objectClass=msDFSR-Topology)"
+        res = self.samdb.search(group_msg.dn, scope=ldb.SCOPE_SUBTREE,
+                           expression=sfilter, attrs=[])
+        assert(len(res) == 1)
+
+        topology_msg = res[0]
+
+        # Search members
+        res = self.samdb.search(topology_msg.dn, scope=ldb.SCOPE_SUBTREE,
+                           expression="(objectClass=msDFSR-Member)",
+                           attrs=["objectGUID", "msDFSR-ComputerReference"])
+        if (len(res) == 0):
+            return
+
+        for member_msg in res:
+            sfilter = "(objectClass=computer)"
+            if computer_name:
+                sfilter = "(&(objectClass=computer)" \
+                          "(name=%s))" % computer_name
+            computer_dn = ldb.Dn(self.samdb,
+                    member_msg.get("msDFSR-ComputerReference", idx=0))
+            res2 = self.samdb.search(computer_dn, scope=ldb.SCOPE_BASE,
+                                expression=sfilter,
+                                attrs=["name", "dNSHostName"])
+            if (len(res2) == 0):
+                continue
+
+            computer_msg = res2[0]
+
+            self.print_group_member(group_msg, topology_msg, member_msg,
+                                    computer_msg)
+        return
+
+    def print_members(self, group_name=None, computer_name=None):
+        # Search group
+        sfilter = "(objectClass=msDFSR-ReplicationGroup)"
+        if group_name:
+            sfilter = "(&(objectClass=msDFSR-ReplicationGroup)" \
+                      "(name=%s))" % group_name
+        dfsr_dn = "CN=DFSR-GlobalSettings,CN=System,%s" % (
+                  self.samdb.domain_dn())
+        res = self.samdb.search(dfsr_dn, scope=ldb.SCOPE_SUBTREE,
+                           expression=sfilter, attrs=["name"])
+        for group_msg in res:
+            self.print_group_members(group_msg, computer_name=computer_name)
+        return
+
 class cmd_dfsr_group_list(DfsrCommand):
     """List all DFS-R groups."""
 
@@ -269,6 +352,36 @@ class cmd_dfsr_folder_create(DfsrCommand):
                                  folder_name=folder_name)
         return
 
+class cmd_dfsr_member_list(DfsrCommand):
+    """List DFS-R group members."""
+
+    synopsis = "%prog [options]"
+
+    takes_args = []
+
+    takes_options = [
+        Option("--group-name", help="List members for this group only",
+               type=str, dest="group_name"),
+        Option("--computer-name", help="List this computer membership only",
+               type=str, dest="computer_name"),
+        Option("-H", "--URL", help="LDB URL for database or target server",
+               type=str, metavar="URL", dest="H"),
+        ]
+
+    takes_optiongroups = {
+        "sambaopts": options.SambaOptions,
+        "credopts": options.CredentialsOptions,
+        "versionopts": options.VersionOptions,
+        }
+
+    def run(self, group_name=None, computer_name=None, sambaopts=None,
+            credopts=None, versionopts=None, H=None):
+        lp = sambaopts.get_loadparm()
+        creds = credopts.get_credentials(lp, fallback_machine=True)
+        self.samdb = SamDB(url=H, session_info=system_session(),
+                           credentials=creds, lp=lp)
+        self.print_members(group_name=group_name, computer_name=computer_name)
+        return
 
 class cmd_dfsr_group(SuperCommand):
     """DFS Replication (DFS-R) group management."""
@@ -284,9 +397,16 @@ class cmd_dfsr_folder(SuperCommand):
     subcommands["list"] = cmd_dfsr_folder_list()
     subcommands["create"] = cmd_dfsr_folder_create()
 
+class cmd_dfsr_member(SuperCommand):
+    """DFS Replication (DFS-R) member management."""
+
+    subcommands = {}
+    subcommands["list"] = cmd_dfsr_member_list()
+
 class cmd_dfsr(SuperCommand):
     """DFS Replication (DFS-R) management"""
 
     subcommands = {}
     subcommands["group"] = cmd_dfsr_group()
     subcommands["folder"] = cmd_dfsr_folder()
+    subcommands["member"] = cmd_dfsr_member()
