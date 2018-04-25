@@ -72,6 +72,52 @@ class DfsrCommand(Command):
             self.outf.write("\n")
         return
 
+    def print_folder(self, group_msg, folder_name=None):
+        sfilter = "(objectClass=msDFSR-ContentSet)"
+        if folder_name:
+            sfilter = "(&(objectClass=msDFSR-ContentSet)" \
+                      "(name=%s))" % folder_name
+        res = self.samdb.search(group_msg.dn, scope=ldb.SCOPE_SUBTREE,
+                                expression=sfilter,
+                                attrs=["name", "objectGUID", "description",
+                                       "msDFSR-FileFilter",
+                                       "msDFSR-DirectoryFilter"])
+        if (len(res) == 0):
+            return
+
+        for folder_msg in res:
+            self.outf.write("%-17s : %s\n" % ("Group Name",
+                str(group_msg.get('name'))))
+            self.outf.write("%-17s : %s\n" % ("Folder Name",
+                str(folder_msg.get('name'))))
+            self.outf.write("%-17s : %s\n" % ("Domain",
+                self.samdb.domain_dns_name()))
+            self.outf.write("%-17s : %s\n" % ("Identifier",
+                ndr_unpack(misc.GUID, folder_msg.get('objectGUID', idx=0))))
+            self.outf.write("%-17s : %s\n" % ("Description",
+                str(folder_msg.get('description'))))
+            self.outf.write("%-17s : %s\n" % ("File Filter",
+                str(folder_msg.get('msDFSR-FileFilter'))))
+            self.outf.write("%-17s : %s\n" % ("Directory Filter",
+                str(folder_msg.get('msDFSR-DirectoryFilter'))))
+            self.outf.write("\n")
+        return
+
+    def print_group_folders(self, group_name=None, folder_name=None):
+        sfilter = "(objectClass=msDFSR-ReplicationGroup)"
+        if group_name:
+            sfilter = "(&(objectClass=msDFSR-ReplicationGroup)" \
+                      "(name=%s))" % group_name
+
+        base_dn = "CN=DFSR-GlobalSettings,CN=System,%s" % (
+                  self.samdb.domain_dn())
+        res = self.samdb.search(base_dn, scope=ldb.SCOPE_SUBTREE,
+                                expression=sfilter,
+                                attrs=["name"])
+        for group_msg in res:
+            self.print_folder(group_msg, folder_name=folder_name)
+        return
+
 class cmd_dfsr_group_list(DfsrCommand):
     """List all DFS-R groups."""
 
@@ -137,6 +183,39 @@ class cmd_dfsr_group_create(DfsrCommand):
                                group_name, e)
         return
 
+class cmd_dfsr_folder_list(DfsrCommand):
+    """List DFS-R group folders."""
+
+    synopsis = "%prog <group_name> [options]"
+
+    takes_args = []
+
+    takes_options = [
+        Option("--group-name", help="Show folders for the provided group only",
+               type=str, dest="group_name"),
+        Option("--folder-name", help="Show the provided folder only",
+               type=str, dest="folder_name"),
+        Option("-H", "--URL", help="LDB URL for database or target server",
+               type=str, metavar="URL", dest="H"),
+        ]
+
+    takes_optiongroups = {
+        "sambaopts": options.SambaOptions,
+        "credopts": options.CredentialsOptions,
+        "versionopts": options.VersionOptions,
+        }
+
+    def run(self, group_name=None, folder_name=None, sambaopts=None,
+            credopts=None, versionopts=None, H=None):
+        lp = sambaopts.get_loadparm()
+        creds = credopts.get_credentials(lp, fallback_machine=True)
+        self.samdb = SamDB(url=H, session_info=system_session(),
+                           credentials=creds, lp=lp)
+
+        self.print_group_folders(group_name=group_name,
+                                 folder_name=folder_name)
+        return
+
 class cmd_dfsr_group(SuperCommand):
     """DFS Replication (DFS-R) group management."""
 
@@ -144,8 +223,15 @@ class cmd_dfsr_group(SuperCommand):
     subcommands["list"] = cmd_dfsr_group_list()
     subcommands["create"] = cmd_dfsr_group_create()
 
+class cmd_dfsr_folder(SuperCommand):
+    """DFS Replication (DFS-R) folder management."""
+
+    subcommands = {}
+    subcommands["list"] = cmd_dfsr_folder_list()
+
 class cmd_dfsr(SuperCommand):
     """DFS Replication (DFS-R) management"""
 
     subcommands = {}
     subcommands["group"] = cmd_dfsr_group()
+    subcommands["folder"] = cmd_dfsr_folder()
