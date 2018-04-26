@@ -383,6 +383,43 @@ class cmd_dfsr_member_list(DfsrCommand):
         self.print_members(group_name=group_name, computer_name=computer_name)
         return
 
+class cmd_dfsr_member_add(DfsrCommand):
+    """Add DFS-R member to replication group."""
+
+    synopsis = "%prog <group_name> <computer_name> [options]"
+
+    takes_args = ["group_name", "computer_name"]
+
+    takes_options = [
+        Option("-H", "--URL", help="LDB URL for database or target server",
+               type=str, metavar="URL", dest="H"),
+        Option("--description", help="Member's description",
+               type=str, dest="description"),
+        ]
+
+    takes_optiongroups = {
+        "sambaopts": options.SambaOptions,
+        "credopts": options.CredentialsOptions,
+        "versionopts": options.VersionOptions,
+        }
+
+    def run(self, group_name, computer_name, description=None,
+            sambaopts=None, credopts=None, versionopts=None, H=None):
+        lp = sambaopts.get_loadparm()
+        creds = credopts.get_credentials(lp, fallback_machine=True)
+        self.samdb = SamDB(url=H, session_info=system_session(),
+                           credentials=creds, lp=lp)
+
+        try:
+            self.samdb.dfsr_member_add(group_name, computer_name,
+                                       description=description)
+        except Exception as e:
+            raise CommandError('Failed to add computer "%s"' %
+                               (computer_name), e)
+        self.print_members(group_name=group_name, computer_name=computer_name)
+        return
+
+
 class cmd_dfsr_group(SuperCommand):
     """DFS Replication (DFS-R) group management."""
 
@@ -402,6 +439,7 @@ class cmd_dfsr_member(SuperCommand):
 
     subcommands = {}
     subcommands["list"] = cmd_dfsr_member_list()
+    subcommands["add"] = cmd_dfsr_member_add()
 
 class cmd_dfsr(SuperCommand):
     """DFS Replication (DFS-R) management"""
