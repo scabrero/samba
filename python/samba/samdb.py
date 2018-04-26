@@ -28,6 +28,7 @@ import time
 import base64
 import os
 import re
+import uuid
 from samba import dsdb, dsdb_dns
 from samba.ndr import ndr_unpack, ndr_pack
 from samba.dcerpc import drsblobs, misc
@@ -1524,6 +1525,10 @@ schemaUpdateNow: 1
             full_dn.add_base(domain_dn)
         return full_dn
 
+    def guid2hexstring(self, val):
+            s = ['\\%02X' % ord(x) for x in val]
+            return ''.join(s)
+
     def dfsr_group_create(self, group_name, group_type=None, description=None,
                           sd=None):
         """Creates a DFS-R group object
@@ -1646,6 +1651,111 @@ schemaUpdateNow: 1
             m["msDFSR-DirectoryFilter"] = directory_filter
 
         self.add(m)
+        return
+
+    def dfsr_member_add(self, group_name, computer_name, description=None):
+        """Adds a DFS-R member to a replication group
+        :param group_name: name atttribute
+        :param computer_name: The name of the computer to add
+        :param description: description attribute
+        """
+
+        # Find group
+        dfsr_dn = "CN=DFSR-GlobalSettings,CN=System,%s" % self.domain_dn()
+        sfilter = "(&(objectClass=msDFSR-ReplicationGroup)(name=%s))" % (
+                  group_name)
+        res = self.search(dfsr_dn, scope=ldb.SCOPE_SUBTREE,
+                           expression=sfilter, attrs=["objectGUID"])
+        if (len(res) == 0):
+            raise Exception('Unable to find group "%s"' % group_name)
+
+        assert(len(res) == 1)
+
+        group_dn = res[0].dn
+        bin_group_guid = res[0].get("objectGUID", idx=0)
+        group_guid = self.guid2hexstring(bin_group_guid)
+
+        # Find group's topology
+        sfilter = "(objectClass=msDFSR-Topology)"
+        res = self.search(group_dn, scope=ldb.SCOPE_SUBTREE,
+                           expression=sfilter, attrs=[])
+        if (len(res) == 0):
+            raise Exception('Unable to find group "%s" topology' % group_name)
+
+        assert(len(res) == 1)
+
+        topology_dn = res[0].dn
+
+        # Find computer account
+        search_filter = "(&(objectClass=computer)(name=%s))" % computer_name
+        res = self.search(self.domain_dn(), scope=ldb.SCOPE_SUBTREE,
+                          expression=search_filter, attrs=[])
+        if len(res) == 0:
+            raise Exception('Unable to find computer "%s"' % computer_name)
+
+        assert(len(res) == 1)
+
+        computer_dn = res[0].dn
+
+        self.transaction_start()
+        try:
+            # Create DFSR-LocalSettings
+            sfilter="(objectclass=msDFSR-LocalSettings)"
+            res = self.search(computer_dn, scope=ldb.SCOPE_SUBTREE,
+                              expression=sfilter, attrs=[])
+            if len(res) == 0:
+                m = {"dn": "CN=DFSR-LocalSettings,%s" % computer_dn,
+                     "objectClass": "msDFSR-LocalSettings",
+                     "msDFSR-Version": "1.0.0.0"}
+                self.add(m)
+                res = self.search(computer_dn, scope=ldb.SCOPE_SUBTREE,
+                                  expression=sfilter, attrs=[])
+
+            assert(len(res) == 1)
+
+            dfsr_local_dn = res[0].dn
+
+            # Generate a name
+            cn = str(uuid.uuid4())
+
+            # Create member of replication group
+            sfilter = "(&(objectClass=msDFSR-Member)" \
+                      "(msDFSR-ComputerReference=%s))" % computer_dn
+            res = self.search(topology_dn, scope=ldb.SCOPE_SUBTREE,
+                              expression=sfilter, attrs=[])
+
+            if len(res) == 0:
+                m = {"dn": "CN=%s,%s" % (cn, topology_dn),
+                     "objectClass": "msDFSR-Member",
+                     "msDFSR-ComputerReference": str(computer_dn)}
+
+                if description:
+                   m["msDFSR-Keywords"] = description
+
+                self.add(m)
+                res = self.search(topology_dn, scope=ldb.SCOPE_SUBTREE,
+                                  expression=sfilter, attrs=[])
+
+            assert(len(res) == 1)
+
+            member_dn = res[0].dn
+
+            # Create subscriber to replication group
+            sfilter = "(&(objectClass=msDFSR-Subscriber)" \
+                      "(msDFSR-ReplicationGroupGuid=%s))" % group_guid
+            res = self.search(dfsr_local_dn, scope=ldb.SCOPE_SUBTREE,
+                              expression=sfilter, attrs=[])
+            if len(res) == 0:
+                m = {"dn": "CN=%s,%s" % (cn, dfsr_local_dn),
+                     "objectClass": "msDFSR-Subscriber",
+                     "msDFSR-ReplicationGroupGuid": bin_group_guid,
+                     "msDFSR-MemberReference": str(member_dn)}
+                self.add(m)
+        except:
+            self.transaction_cancel()
+            raise
+        else:
+            self.transaction_commit()
         return
 
 class dsdb_Dn(object):
