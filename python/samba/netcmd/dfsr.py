@@ -201,6 +201,155 @@ class DfsrCommand(Command):
             self.print_group_members(group_msg, computer_name=computer_name)
         return
 
+    def print_computer_subscription(self, group_msg, computer_msg,
+                                    subscriber_msg, folder_name=None):
+        # Get folder subscriptions
+        sfilter = "(objectClass=msDFSR-Subscription)"
+        res = self.samdb.search(subscriber_msg.dn, scope=ldb.SCOPE_SUBTREE,
+                           expression=sfilter,
+                           attrs=["objectGUID",
+                                  "msDFSR-ContentSetGuid",
+                                  "msDFSR-RootPath",
+                                  "msDFSR-StagingPath",
+                                  "msDFSR-StagingSizeInMb",
+                                  "msDFSR-ConflictPath",
+                                  "msDFSR-ConflictSizeInMb",
+                                  "msDFSR-ReadOnly",
+                                  "msDFSR-Enabled",
+                                  "msDFSR-Options"])
+        for msg in res:
+            folder_guid = msg.get("msDFSR-ContentSetGuid", idx=0)
+            folder_guid = self.samdb.guid2hexstring(folder_guid)
+
+            # Search folder
+            sfilter = "(&(objectClass=msDFSR-ContentSet)" \
+                      "(ObjectGUID=%s))" % folder_guid
+            if folder_name:
+                sfilter = "(&(objectClass=msDFSR-ContentSet)" \
+                          "(ObjectGUID=%s)" \
+                          "(name=%s))" % (folder_guid, folder_name)
+            res2 = self.samdb.search(group_msg.dn, scope=ldb.SCOPE_SUBTREE,
+                                     expression=sfilter, attrs=["name"])
+            if (len(res2) == 0):
+                continue
+
+            folder_msg = res2[0]
+
+            read_only = msg.get("msDFSR-ReadOnly", idx=0)
+            if read_only == 1:
+                read_only = True
+            else:
+                read_only = False
+
+            enabled = msg.get("msDFSR-Enabled", idx=0)
+            if enabled == 1:
+                enabled = True
+            else:
+                enabled = False
+
+            primary = msg.get("msDFSR-Options", idx=0)
+            if int(primary) & 0x1:
+                primary = True
+            else:
+                primary = False
+
+            self.outf.write("%-28s : %s\n" % ("Group Name",
+                str(group_msg.get('name'))))
+            self.outf.write("%-28s : %s\n" % ("Computer Name",
+                str(computer_msg.get('name'))))
+            self.outf.write("%-28s : %s\n" % ("Folder Name",
+                str(folder_msg.get('name'))))
+            self.outf.write("%-28s : %s\n" % ("Domain",
+                self.samdb.domain_dns_name()))
+            self.outf.write("%-28s : %s\n" % ("Identifier",
+                ndr_unpack(misc.GUID, msg.get("objectGUID", idx=0))))
+            self.outf.write("%-28s : %s\n" %
+                ("Distinguished Name", str(msg.dn)))
+            self.outf.write("%-28s : %s\n" %
+                ("Root Path", str(msg.get("msDFSR-RootPath"))))
+            self.outf.write("%-28s : %s\n" %
+                ("Staging Path", str(msg.get("msDFSR-StagingPath", idx=0))))
+            self.outf.write("%-28s : %s\n" %
+                ("Staging Quota (in MB)", str(msg.get("msDFSR-StagingSizeInMb"))))
+            self.outf.write("%-28s : %s\n" %
+                ("Conflict Path", str(msg.get("msDFSR-ConflictPath", idx=0))))
+            self.outf.write("%-28s : %s\n" %
+                ("Conflict Quota (in MB)", str(msg.get("msDFSR-ConflictSizeInMB"))))
+            self.outf.write("%-28s : %s\n" %
+                ("Primary Member", str(primary)))
+            self.outf.write("%-28s : %s\n" %
+                ("Read Only", str(read_only)))
+            self.outf.write("%-28s : %s\n" %
+                ("Enabled", str(enabled)))
+            self.outf.write("\n")
+
+        return
+
+    def print_group_subscription(self, group_msg, folder_name=None,
+                                 computer_name=None):
+        group_guid = self.samdb.guid2hexstring(group_msg.get("objectGUID", idx=0))
+
+        # Get the members
+        sfilter = "(objectClass=msDFSR-Member)"
+        res = self.samdb.search(group_msg.dn, scope=ldb.SCOPE_SUBTREE,
+                                expression=sfilter,
+                                attrs=["msDFSR-ComputerReference"])
+        for member in res:
+            computer_dn = member.get("msDFSR-ComputerReference", idx=0)
+            sfilter = "(objectClass=computer)"
+            if computer_name:
+                sfilter = "(&(objectClass=computer)(name=%s))" % computer_name
+            computer_res = self.samdb.search(computer_dn, scope=ldb.SCOPE_BASE,
+                                             expression=sfilter,
+                                             attrs=["name"])
+            if (len(computer_res) == 0):
+                continue
+
+            computer_msg = computer_res[0]
+
+            # Search local settings
+            sfilter = "(objectClass=msDFSR-LocalSettings)"
+            res2 = self.samdb.search(computer_msg.dn, scope=ldb.SCOPE_SUBTREE,
+                                     expression=sfilter, attrs=[])
+            if (len(res2) == 0):
+                continue
+
+            dfsr_local_dn = res2[0].dn
+
+            # Search subcription to replica group
+            sfilter = "(&(objectClass=msDFSR-Subscriber)" \
+                      "(msDFSR-ReplicationGroupGuid=%s))" % group_guid
+            res2 = self.samdb.search(dfsr_local_dn, scope=ldb.SCOPE_SUBTREE,
+                                     expression=sfilter, attrs=[])
+            if (len(res2) == 0):
+                continue
+
+            for subscriber_msg in res2:
+                self.print_computer_subscription(group_msg, computer_msg,
+                                                 subscriber_msg,
+                                                 folder_name=folder_name)
+        return
+
+    def print_subscription(self, group_name=None, folder_name=None,
+                           computer_name=None):
+        # Search group
+        base_dn = "CN=DFSR-GlobalSettings,CN=System,%s" % self.samdb.domain_dn()
+        sfilter = "(objectClass=msDFSR-ReplicationGroup)"
+        if group_name:
+            sfilter = "(&(objectClass=msDFSR-ReplicationGroup)" \
+                      "(name=%s))" % (group_name)
+        res = self.samdb.search(base_dn, scope=ldb.SCOPE_SUBTREE,
+                           expression=sfilter, attrs=["name", "objectGUID"])
+
+        if (len(res) == 0):
+            raise Exception('Unable to find replication groups')
+
+        for group in res:
+            self.print_group_subscription(group,
+                                          folder_name=folder_name,
+                                          computer_name=computer_name)
+        return
+
 class cmd_dfsr_group_list(DfsrCommand):
     """List all DFS-R groups."""
 
@@ -419,6 +568,43 @@ class cmd_dfsr_member_add(DfsrCommand):
         self.print_members(group_name=group_name, computer_name=computer_name)
         return
 
+class cmd_dfsr_subscription_list(DfsrCommand):
+    """List DFS-R replication group member subscriptions."""
+
+    synopsis = "%prog [options]"
+
+    takes_args = []
+
+    takes_options = [
+        Option("-H", "--URL", help="LDB URL for database or target server",
+               type=str, metavar="URL", dest="H"),
+        Option("--group-name", help="List subscriptions for this group only",
+               type=str, dest="group_name"),
+        Option("--folder-name", help="List subscriptions for this folder only",
+               type=str, dest="folder_name"),
+        Option("--computer-name", help="List subscriptions for this computer only",
+               type=str, dest="computer_name")
+        ]
+
+    takes_optiongroups = {
+        "sambaopts": options.SambaOptions,
+        "credopts": options.CredentialsOptions,
+        "versionopts": options.VersionOptions,
+        }
+
+
+    def run(self, group_name=None, folder_name=None, computer_name=None,
+            sambaopts=None, credopts=None, versionopts=None, H=None):
+        lp = sambaopts.get_loadparm()
+        creds = credopts.get_credentials(lp, fallback_machine=True)
+        self.samdb = SamDB(url=H, session_info=system_session(),
+                           credentials=creds, lp=lp)
+
+        self.print_subscription(group_name=group_name,
+                                folder_name=folder_name,
+                                computer_name=computer_name)
+
+        return
 
 class cmd_dfsr_group(SuperCommand):
     """DFS Replication (DFS-R) group management."""
@@ -441,6 +627,12 @@ class cmd_dfsr_member(SuperCommand):
     subcommands["list"] = cmd_dfsr_member_list()
     subcommands["add"] = cmd_dfsr_member_add()
 
+class cmd_dfsr_subscription(SuperCommand):
+    """DFS Replication (DFS-R) subscription management."""
+
+    subcommands = {}
+    subcommands["list"] = cmd_dfsr_subscription_list()
+
 class cmd_dfsr(SuperCommand):
     """DFS Replication (DFS-R) management"""
 
@@ -448,3 +640,4 @@ class cmd_dfsr(SuperCommand):
     subcommands["group"] = cmd_dfsr_group()
     subcommands["folder"] = cmd_dfsr_folder()
     subcommands["member"] = cmd_dfsr_member()
+    subcommands["subscription"] = cmd_dfsr_subscription()
