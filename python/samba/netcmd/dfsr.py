@@ -16,8 +16,11 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
 
+from __future__ import print_function
+
 import samba.getopt as options
 import ldb
+import sys
 from samba.samdb import SamDB
 from samba.auth import system_session
 from samba.ndr import ndr_unpack, ndr_pack, ndr_print
@@ -606,6 +609,80 @@ class cmd_dfsr_subscription_list(DfsrCommand):
 
         return
 
+class cmd_dfsr_subscription_add(DfsrCommand):
+    """Add DFS-R subscription to replicated folder."""
+
+    synopsis = "%prog <group_name> <folder_name> <computer_name> [options]"
+
+    takes_args = ["group_name", "folder_name", "computer_name"]
+
+    takes_options = [
+        Option("-H", "--URL", help="LDB URL for database or target server",
+               type=str, metavar="URL", dest="H"),
+        Option("--content-path", help="Root directory of the replicated folder",
+               type=str, dest="content_path"),
+        Option("--staging-path", help="Staging directory of the replicated folder",
+               type=str, dest="staging_path"),
+        Option("--conflict-path", help="Conflicted and deleted directory of the replicated folder",
+               type=str, dest="conflict_path"),
+        Option("--staging-quota", help="Maximum size of the staging folder",
+               type=int, dest="staging_size"),
+        Option("--conflict-quota", help="Maximum size of the conflict folder",
+               type=int, dest="conflict_size"),
+        Option("--primary-member",
+               help="Set this computer as the primary member of the group." \
+                    "Specify only one primary member in each group",
+               dest="primary_member", action="store_true"),
+        Option("--read-only",
+               help="Set this replicated folder as read only",
+               dest="read_only", action="store_true"),
+        Option("--disabled",
+               help="Set this subscription as disabled",
+               dest="disabled", action="store_true"),
+        ]
+
+    takes_optiongroups = {
+        "sambaopts": options.SambaOptions,
+        "credopts": options.CredentialsOptions,
+        "versionopts": options.VersionOptions,
+        }
+
+    def run(self, group_name, folder_name, computer_name,
+            content_path=None, staging_path=None, conflict_path=None,
+            staging_size=None, conflict_size=None, primary_member=False,
+            read_only=False, disabled=False, sambaopts=None, credopts=None,
+            versionopts=None, H=None):
+        lp = sambaopts.get_loadparm()
+        creds = credopts.get_credentials(lp, fallback_machine=True)
+        self.samdb = SamDB(url=H, session_info=system_session(),
+                      credentials=creds, lp=lp)
+
+        if content_path is None:
+            print("Content path:", end=' ')
+            content_path = sys.stdin.readline().rstrip("\n")
+
+        if content_path in (None, ""):
+            raise CommandError("No realm set!")
+
+        try:
+            self.samdb.dfsr_subscription_add(group_name,
+                                             folder_name,
+                                             computer_name,
+                                             content_path=content_path,
+                                             staging_path=staging_path,
+                                             conflict_path=conflict_path,
+                                             staging_size=staging_size,
+                                             conflict_size=conflict_size,
+                                             primary_member=primary_member,
+                                             read_only=read_only,
+                                             disabled=disabled)
+            self.print_subscription(group_name, folder_name, computer_name)
+        except Exception as e:
+            raise CommandError('Failed to add subscription to "%s"' %
+                               (folder_name), e)
+
+        return
+
 class cmd_dfsr_group(SuperCommand):
     """DFS Replication (DFS-R) group management."""
 
@@ -632,6 +709,7 @@ class cmd_dfsr_subscription(SuperCommand):
 
     subcommands = {}
     subcommands["list"] = cmd_dfsr_subscription_list()
+    subcommands["add"] = cmd_dfsr_subscription_add()
 
 class cmd_dfsr(SuperCommand):
     """DFS Replication (DFS-R) management"""
