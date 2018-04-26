@@ -1758,6 +1758,144 @@ schemaUpdateNow: 1
             self.transaction_commit()
         return
 
+    def dfsr_subscription_add(self, group_name, folder_name, computer_name,
+                              content_path=None, staging_path=None,
+                              conflict_path=None, staging_size=None,
+                              conflict_size=None, primary_member=False,
+                              read_only=False, disabled=False):
+        # Get the group
+        dfsr_dn = "CN=DFSR-GlobalSettings,CN=System,%s" % self.domain_dn()
+        sfilter = "(&(objectClass=msDFSR-ReplicationGroup)" \
+                  "(!(msDFSR-ReplicationGroupType=1))" \
+                  "(name=%s))" % (group_name)
+        res = self.search(dfsr_dn, scope=ldb.SCOPE_SUBTREE,
+                          expression=sfilter, attrs=["objectGUID"])
+
+        if (len(res) == 0):
+            raise Exception('Unable to find group "%s"' % group_name)
+
+        assert(len(res) == 1)
+
+        group_dn = res[0].dn
+        bin_group_guid = res[0].get("objectGUID", idx=0)
+        group_guid = self.guid2hexstring(bin_group_guid)
+
+        # Get group content
+        sfilter = "(objectClass=msDFSR-Content)"
+        res = self.search(group_dn, scope=ldb.SCOPE_SUBTREE,
+                           expression=sfilter, attrs=[])
+        if (len(res) == 0):
+            raise Exception('Unable to find group "%s" content' % group_name)
+
+        assert(len(res) == 1)
+
+        content_dn = res[0].dn
+
+        # Get the folder
+        sfilter = "(&(objectClass=msDFSR-ContentSet)" \
+                  "(name=%s))" % folder_name
+        res = self.search(content_dn, scope=ldb.SCOPE_SUBTREE,
+                          expression=sfilter, attrs=["objectGUID"])
+        if (len(res) == 0):
+            raise Exception('Unable to find folder "%s"' % folder_name)
+
+        assert(len(res) == 1)
+
+        folder_dn = res[0].dn
+        bin_folder_guid = res[0].get("objectGUID", idx=0)
+        folder_guid = self.guid2hexstring(bin_folder_guid)
+        unpkd_folder_guid = ndr_unpack(misc.GUID, bin_folder_guid)
+
+        # Get computer
+        sfilter = "(&(objectClass=computer)(name=%s))" % computer_name
+        res = self.search(self.domain_dn(), scope=ldb.SCOPE_SUBTREE,
+                          expression=sfilter, attrs=[])
+        if len(res) == 0:
+            raise Exception('Unable to find computer "%s"' % computer_name)
+
+        assert(len(res) == 1)
+
+        computer_dn = res[0].dn
+
+        # Get local settings
+        sfilter="(objectclass=msDFSR-LocalSettings)"
+        res = self.search(computer_dn, scope=ldb.SCOPE_SUBTREE,
+                          expression=sfilter, attrs=[])
+        if (len(res) == 0):
+            raise Exception('Computer is not a member of replication group')
+
+        assert(len(res) == 1)
+
+        dfsr_local_dn = res[0].dn
+
+        # Get subscriber
+        sfilter = "(&(objectClass=msDFSR-Subscriber)" \
+                  "(msDFSR-ReplicationGroupGuid=%s))" % group_guid
+        res = self.search(dfsr_local_dn, scope=ldb.SCOPE_SUBTREE,
+                          expression=sfilter, attrs=[])
+        if (len(res) == 0):
+            raise Exception('Computer is not a member of replication group')
+
+        assert(len(res) == 1)
+
+        subscriber_dn = res[0].dn
+
+        sfilter = "(&(objectClass=msDFSR-Subscription)" \
+                  "(msDFSR-ContentSetGuid=%s)" \
+                  "(msDFSR-ReplicationGroupGuid=%s))" % (
+                          folder_guid, group_guid)
+        res = self.search(subscriber_dn, scope=ldb.SCOPE_SUBTREE,
+                          expression=sfilter, attrs=[])
+
+        if (len(res) > 0):
+            raise Exception('Computer is already subscribed to folder')
+
+        if content_path:
+            if staging_path is None:
+                staging_path = os.path.join(content_path,
+                                            "DfsrPrivate","Staging")
+            if conflict_path is None:
+                conflict_path = os.path.join(content_path,
+                                             "DfsrPrivate","ConflictAndDeleted")
+
+        self.transaction_start()
+        try:
+            m = {"dn": "CN=%s,%s" % (unpkd_folder_guid, subscriber_dn),
+                 "objectClass": "msDFSR-Subscription",
+                 "msDFSR-ReplicationGroupGuid": bin_group_guid,
+                 "msDFSR-ContentSetGuid": bin_folder_guid,
+                 "msDFSR-MaxAgeInCacheInMin": "0",
+                 "msDFSR-MinDurationCacheInMin": "0",
+                 "msDFSR-StagingSizeInMb": "4096",
+                 "msDFSR-ConflictSizeInMb": "4096",
+                 "msDFSR-Options": "0",
+                 "msDFSR-ReadOnly": "FALSE",
+                 "msDFSR-Enabled": "TRUE",}
+            if content_path:
+                m["msDFSR-RootPath"] = content_path
+            if staging_path:
+                m["msDFSR-StagingPath"] = staging_path
+            if conflict_path:
+                m["msDFSR-ConflictPath"] = conflict_path
+            if staging_size:
+                m["msDFSR-StagingSizeInMb"] = str(staging_size)
+            if conflict_size:
+                m["msDFSR-ConflictSizeInMb"] = str(conflict_size)
+            if primary_member:
+                m["msDFSR-Options"] = "1"
+            if read_only:
+                m["msDFSR-ReadOnly"] = "TRUE"
+            if disabled:
+                m["msDFSR-Enabled"] = "FALSE"
+
+            self.add(m)
+        except:
+            self.transaction_cancel()
+            raise
+        else:
+            self.transaction_commit()
+        return
+
 class dsdb_Dn(object):
     '''a class for binary DN'''
 
