@@ -1896,6 +1896,149 @@ schemaUpdateNow: 1
             self.transaction_commit()
         return
 
+    def dfsr_connection_create(self, group_name, source, destination,
+                               description=None, disabled=False,
+                               enable_rdc=False, min_rdc_size=64,
+                               two_way=False):
+        # Get the group
+        dfsr_dn = "CN=DFSR-GlobalSettings,CN=System,%s" % self.domain_dn()
+        sfilter = "(&(objectClass=msDFSR-ReplicationGroup)" \
+                  "(!(msDFSR-ReplicationGroupType=1))" \
+                  "(name=%s))" % (group_name)
+        res = self.search(dfsr_dn, scope=ldb.SCOPE_SUBTREE,
+                          expression=sfilter, attrs=["objectGUID"])
+
+        if (len(res) == 0):
+            raise Exception('Unable to find group "%s"' % group_name)
+
+        assert(len(res) == 1)
+
+        group_dn = res[0].dn
+        bin_group_guid = res[0].get("objectGUID", idx=0)
+        group_guid = self.guid2hexstring(bin_group_guid)
+
+        # Get destination computer
+        sfilter = "(&(objectClass=computer)(name=%s))" % destination
+        res = self.search(self.domain_dn(), scope=ldb.SCOPE_SUBTREE,
+                          expression=sfilter, attrs=[])
+        if len(res) == 0:
+            raise Exception('Unable to find destination computer')
+
+        assert(len(res) == 1)
+
+        dest_computer_dn = res[0].dn
+
+        # Get destination local settings
+        sfilter="(objectclass=msDFSR-LocalSettings)"
+        res = self.search(dest_computer_dn, scope=ldb.SCOPE_SUBTREE,
+                          expression=sfilter, attrs=[])
+        if (len(res) == 0):
+            raise Exception('Destination computer is not a member of replication group')
+
+        assert(len(res) == 1)
+
+        dest_dfsr_local_dn = res[0].dn
+
+        # Get destination subscriber
+        sfilter = "(&(objectClass=msDFSR-Subscriber)" \
+                  "(msDFSR-ReplicationGroupGuid=%s))" % group_guid
+        res = self.search(dest_dfsr_local_dn, scope=ldb.SCOPE_SUBTREE,
+                          expression=sfilter, attrs=["msDFSR-MemberReference"])
+        if (len(res) == 0):
+            raise Exception('Computer is not a member of replication group')
+
+        assert(len(res) == 1)
+
+        destination_member_dn = res[0].get("msDFSR-MemberReference", idx=0)
+
+        # Get source computer
+        sfilter = "(&(objectClass=computer)(name=%s))" % source
+        res = self.search(self.domain_dn(), scope=ldb.SCOPE_SUBTREE,
+                          expression=sfilter, attrs=[])
+        if len(res) == 0:
+            raise Exception('Unable to find source computer')
+
+        assert(len(res) == 1)
+
+        source_computer_dn = res[0].dn
+
+        # Get source local settings
+        sfilter="(objectclass=msDFSR-LocalSettings)"
+        res = self.search(source_computer_dn, scope=ldb.SCOPE_SUBTREE,
+                          expression=sfilter, attrs=[])
+        if (len(res) == 0):
+            raise Exception('Source computer is not a member of replication group')
+
+        assert(len(res) == 1)
+
+        source_dfsr_local_dn = res[0].dn
+
+        # Get source subscriber
+        sfilter = "(&(objectClass=msDFSR-Subscriber)" \
+                  "(msDFSR-ReplicationGroupGuid=%s))" % group_guid
+        res = self.search(source_dfsr_local_dn, scope=ldb.SCOPE_SUBTREE,
+                          expression=sfilter, attrs=["msDFSR-MemberReference"])
+        if (len(res) == 0):
+            raise Exception('Source computer is not a member of replication group')
+
+        assert(len(res) == 1)
+
+        source_member_dn = res[0].get("msDFSR-MemberReference", idx=0)
+
+        # Check if connections already exists
+        sfilter = "(&(objectClass=msDFSR-Connection)" \
+                  "(fromServer=%s))" % source_member_dn
+        res = self.search(destination_member_dn, scope=ldb.SCOPE_SUBTREE,
+                          expression=sfilter, attrs=[])
+        if (len(res) > 0):
+            raise Exception('%s already has a connection from %s' %(
+                            destination, source))
+
+        if two_way:
+            sfilter = "(&(objectClass=msDFSR-Connection)" \
+                      "(fromServer=%s))" % destination_member_dn
+            res = self.search(source_member_dn, scope=ldb.SCOPE_SUBTREE,
+                              expression=sfilter, attrs=[])
+            if (len(res) > 0):
+                raise Exception('%s already has a connection from %s' %(
+                                source, destination))
+
+        # Create connection
+        if disabled:
+            enabled = "FALSE"
+        else:
+            enabled = "TRUE"
+
+        if enable_rdc:
+            rdc_enabled = "TRUE"
+        else:
+            rdc_enabled = "FALSE"
+
+        cn = str(uuid.uuid4())
+        m = {"dn": "CN=%s,%s" % (cn, destination_member_dn),
+             "objectClass": "msDFSR-Connection",
+             "fromServer": source_member_dn,
+             "msDFSR-Enabled": enabled,
+             "msDFSR-RdcEnabled": rdc_enabled,
+             "msDFSR-RdcMinFileSizeInKb": str(min_rdc_size)}
+        if description:
+            m["msDFSR-Keywords"] = description
+
+        self.transaction_start()
+        try:
+            self.add(m)
+            if two_way:
+                cn = str(uuid.uuid4())
+                m["dn"] = "CN=%s,%s" % (cn, source_member_dn)
+                m["fromServer"] = destination_member_dn
+                self.add(m)
+        except:
+            self.transaction_cancel()
+            raise
+        else:
+            self.transaction_commit()
+        return
+
 class dsdb_Dn(object):
     '''a class for binary DN'''
 

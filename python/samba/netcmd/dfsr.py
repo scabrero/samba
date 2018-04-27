@@ -860,6 +860,63 @@ class cmd_dfsr_connection_list(DfsrCommand):
 
         return
 
+class cmd_dfsr_connection_create(DfsrCommand):
+    """Create a new DFS-R connection."""
+
+    synopsis = "%prog <group_name> <source> <destination> [options]"
+
+    takes_args = ["group_name", "source", "destination"]
+
+    takes_options = [
+        Option("-H", "--URL", help="LDB URL for database or target server",
+               type=str, metavar="URL", dest="H"),
+        Option("--disabled",
+               help="Create the connection disabled",
+               dest="disabled", action="store_true"),
+        Option("--enable-rdc",
+               help="Enable RDC for this connection",
+               dest="enable_rdc", action="store_true"),
+        Option("--description", help="Connection's description",
+               type=str, dest="description"),
+        Option("--min-rdc-size", help="Minimum file size in KB to use RDC",
+               type=int, dest="min_rdc_size", default=64),
+        Option("--two-way",
+               help="Create a connection in the opposite direction",
+               dest="two_way", action="store_true"),
+        ]
+
+    takes_optiongroups = {
+        "sambaopts": options.SambaOptions,
+        "credopts": options.CredentialsOptions,
+        "versionopts": options.VersionOptions,
+        }
+
+    def run(self, group_name=None, source=None, destination=None,
+            description=None, disabled=False, enable_rdc=False,
+            min_rdc_size=64, two_way=False,
+            sambaopts=None, credopts=None, versionopts=None, H=None):
+        lp = sambaopts.get_loadparm()
+        creds = credopts.get_credentials(lp, fallback_machine=True)
+        self.samdb = SamDB(url=H, session_info=system_session(),
+                           credentials=creds, lp=lp)
+
+        try:
+            self.samdb.dfsr_connection_create(group_name, source, destination,
+                                              description=description,
+                                              disabled=disabled,
+                                              enable_rdc=enable_rdc,
+                                              min_rdc_size=min_rdc_size,
+                                              two_way=two_way)
+            self.print_connection(group_name=group_name, source=source,
+                                  destination=destination)
+            if two_way:
+                self.print_connection(group_name=group_name,
+                                      source=destination,
+                                      destination=source)
+        except Exception as e:
+            raise CommandError('Failed to create connection', e)
+
+        return
 
 class cmd_dfsr_group(SuperCommand):
     """DFS Replication (DFS-R) group management."""
@@ -894,6 +951,7 @@ class cmd_dfsr_connection(SuperCommand):
 
     subcommands = {}
     subcommands["list"] = cmd_dfsr_connection_list()
+    subcommands["create"] = cmd_dfsr_connection_create()
 
 class cmd_dfsr(SuperCommand):
     """DFS Replication (DFS-R) management"""
