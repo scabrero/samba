@@ -353,6 +353,147 @@ class DfsrCommand(Command):
                                           computer_name=computer_name)
         return
 
+    def print_member_connections(self, group_msg, member_msg, source=None):
+        # Search connections
+        sfilter = "(objectClass=msDFSR-Connection)"
+        if source:
+            # Search DN of source
+            sfilter = "(&(objectClass=computer)" \
+                      "(name=%s))" % source
+            res = self.samdb.search(self.samdb.domain_dn(),
+                                    scope=ldb.SCOPE_SUBTREE,
+                                    expression=sfilter,
+                                    attrs=[])
+            if len(res) == 0:
+                raise Exception('Unable to find source computer')
+
+            assert(len(res) == 1)
+
+            source_dn = res[0].dn
+
+            # Get the subscriber
+            group_guid = ndr_unpack(misc.GUID,
+                    group_msg.get("ObjectGUID", idx=0))
+            sfilter = "(&(objectClass=msDFSR-Subscriber)" \
+                      "(msDFSR-ReplicationGroupGuid=%s))" % group_guid
+            res = self.samdb.search(source_dn, scope=ldb.SCOPE_SUBTREE,
+                                    expression=sfilter,
+                                    attrs=["msDFSR-MemberReference"])
+            if len(res) == 0:
+                return
+
+            assert(len(res) == 1)
+
+            member_ref = res[0].get("msDFSR-MemberReference", idx=0)
+
+            sfilter = "(&(objectClass=msDFSR-Connection)" \
+                      "(fromServer=%s))" % member_ref
+
+        res = self.samdb.search(member_msg.dn, scope=ldb.SCOPE_SUBTREE,
+                                expression=sfilter,
+                                attrs=["objectGUID", "description",
+                                       "fromServer", "msDFSR-Enabled",
+                                       "msDFSR-RdcEnabled",
+                                       "msDFSR-RdcMinFileSizeInKb"])
+        for conn in res:
+            # Get source, fromServer points to member.
+            from_dn = conn.get("fromServer", idx=0)
+            res2 = self.samdb.search(from_dn, scope=ldb.SCOPE_BASE,
+                                     attrs=["msDFSR-ComputerReference"])
+            assert(len(res2) == 1)
+
+            source_dn = res2[0].get("msDFSR-ComputerReference", idx=0)
+
+            enabled = conn.get("msDFSR-Enabled", idx=0)
+            if enabled == "TRUE":
+                enabled = True
+            else:
+                enabled = False
+
+            rdc_enabled = conn.get("msDFSR-RdcEnabled", idx=0)
+            if rdc_enabled == "TRUE":
+                rdc_enabled = True
+            else:
+                rdc_enabled = False
+
+            self.outf.write("%-30s : %s\n" % ("Group Name",
+                str(group_msg.get("name", idx=0))))
+            self.outf.write("%-30s : %s\n" % ("Source Computer",
+                str(source_dn)))
+            self.outf.write("%-30s : %s\n" % ("Destination Computer",
+                str(member_msg.get('msDFSR-ComputerReference'))))
+            self.outf.write("%-30s : %s\n" % ("Domain",
+                self.samdb.domain_dns_name()))
+            self.outf.write("%-30s : %s\n" % ("Identifier",
+                ndr_unpack(misc.GUID, conn.get("objectGUID", idx=0))))
+            self.outf.write("%-30s : %s\n" % ("Description",
+                str(conn.get("description", idx=0))))
+            self.outf.write("%-30s : %s\n" % ("Enabled",
+                str(enabled)))
+            self.outf.write("%-30s : %s\n" % ("RDC Enabled",
+                str(rdc_enabled)))
+            self.outf.write("%-30s : %s\n" % ("Minimum RDC File Size (in KB)",
+                str(conn.get("msDFSR-RdcMinFileSizeInKb", idx=0))))
+            self.outf.write("\n")
+
+    def print_group_connections(self, group_msg, source=None,
+                                destination=None):
+        # Search topology
+        sfilter = "(objectClass=msDFSR-Topology)"
+        res = self.samdb.search(group_msg.dn, scope=ldb.SCOPE_SUBTREE,
+                                expression=sfilter, attrs=[])
+        if (len(res) == 0):
+            raise Exception('Unable to find group topology')
+
+        topology_dn = res[0].dn
+
+        # Search members
+        sfilter = "(objectClass=msDFSR-Member)"
+        if destination:
+            # Search DN of destination
+            sfilter = "(&(objectClass=computer)" \
+                      "(name=%s))" % destination
+            res = self.samdb.search(self.samdb.domain_dn(),
+                                    scope=ldb.SCOPE_SUBTREE,
+                                    expression=sfilter,
+                                    attrs=[])
+            if len(res) == 0:
+                raise Exception('Unable to find destination computer')
+
+            assert(len(res) == 1)
+
+            destination_dn = res[0].dn
+
+            sfilter = "(&(objectClass=msDFSR-Member)" \
+                      "(msDFSR-ComputerReference=%s))" % destination_dn
+
+        res = self.samdb.search(topology_dn, scope=ldb.SCOPE_SUBTREE,
+                                expression=sfilter,
+                                attrs=["msDFSR-ComputerReference"])
+        for member in res:
+            self.print_member_connections(group_msg, member, source=source)
+        return
+
+    def print_connection(self, group_name=None, source=None,
+                         destination=None):
+        # Search group
+        base_dn = "CN=DFSR-GlobalSettings,CN=System,%s" % (
+                  self.samdb.domain_dn())
+        sfilter = "(objectClass=msDFSR-ReplicationGroup)"
+        if group_name:
+            sfilter = "(&(objectClass=msDFSR-ReplicationGroup)" \
+                      "(name=%s))" % (group_name)
+        res = self.samdb.search(base_dn, scope=ldb.SCOPE_SUBTREE,
+                           expression=sfilter, attrs=["objectGUID", "name"])
+
+        if (len(res) == 0):
+            raise Exception('Unable to find replication group')
+
+        for group in res:
+            self.print_group_connections(group, source=source,
+                                         destination=destination)
+        return
+
 class cmd_dfsr_group_list(DfsrCommand):
     """List all DFS-R groups."""
 
@@ -683,6 +824,43 @@ class cmd_dfsr_subscription_add(DfsrCommand):
 
         return
 
+class cmd_dfsr_connection_list(DfsrCommand):
+    """List DFS-R connections."""
+
+    synopsis = "%prog [options]"
+
+    takes_args = []
+
+    takes_options = [
+        Option("-H", "--URL", help="LDB URL for database or target server",
+               type=str, metavar="URL", dest="H"),
+        Option("--group-name", help="List connections for this group only",
+               type=str, dest="group_name"),
+        Option("--source", help="List connections from this computer only",
+               type=str, dest="source"),
+        Option("--destination", help="List connections to this computer only",
+               type=str, dest="destination")
+        ]
+
+    takes_optiongroups = {
+        "sambaopts": options.SambaOptions,
+        "credopts": options.CredentialsOptions,
+        "versionopts": options.VersionOptions,
+        }
+
+    def run(self, group_name=None, source=None, destination=None,
+            sambaopts=None, credopts=None, versionopts=None, H=None):
+        lp = sambaopts.get_loadparm()
+        creds = credopts.get_credentials(lp, fallback_machine=True)
+        self.samdb = SamDB(url=H, session_info=system_session(),
+                           credentials=creds, lp=lp)
+
+        self.print_connection(group_name=group_name, source=source,
+                              destination=destination)
+
+        return
+
+
 class cmd_dfsr_group(SuperCommand):
     """DFS Replication (DFS-R) group management."""
 
@@ -711,6 +889,12 @@ class cmd_dfsr_subscription(SuperCommand):
     subcommands["list"] = cmd_dfsr_subscription_list()
     subcommands["add"] = cmd_dfsr_subscription_add()
 
+class cmd_dfsr_connection(SuperCommand):
+    """DFS Replication (DFS-R) connection management."""
+
+    subcommands = {}
+    subcommands["list"] = cmd_dfsr_connection_list()
+
 class cmd_dfsr(SuperCommand):
     """DFS Replication (DFS-R) management"""
 
@@ -719,3 +903,4 @@ class cmd_dfsr(SuperCommand):
     subcommands["folder"] = cmd_dfsr_folder()
     subcommands["member"] = cmd_dfsr_member()
     subcommands["subscription"] = cmd_dfsr_subscription()
+    subcommands["connection"] = cmd_dfsr_connection()
