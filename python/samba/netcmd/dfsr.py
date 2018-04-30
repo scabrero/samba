@@ -21,6 +21,11 @@ from __future__ import print_function
 import samba.getopt as options
 import ldb
 import sys
+import os
+import re
+import tempfile
+import difflib
+from subprocess import Popen, PIPE, STDOUT, check_call, CalledProcessError
 from samba.samdb import SamDB
 from samba.auth import system_session
 from samba.ndr import ndr_unpack, ndr_pack, ndr_print
@@ -494,6 +499,66 @@ class DfsrCommand(Command):
                                          destination=destination)
         return
 
+    def edit_result(self, dn, res, editor=None):
+        for msg in res:
+            r_ldif = self.samdb.write_ldif(msg, 1)
+            # remove 'changetype' line
+            result_ldif = re.sub('changetype: add\n', '', r_ldif)
+
+            if editor is None:
+                editor = os.environ.get('EDITOR')
+                if editor is None:
+                    editor = 'vi'
+
+            with tempfile.NamedTemporaryFile(suffix=".tmp") as t_file:
+                t_file.write(result_ldif)
+                t_file.flush()
+                try:
+                    check_call([editor, t_file.name])
+                except CalledProcessError as e:
+                    raise CalledProcessError("ERROR: ", e)
+                with open(t_file.name) as edited_file:
+                    edited_message = edited_file.read()
+
+        if result_ldif != edited_message:
+            diff = difflib.ndiff(result_ldif.splitlines(),
+                                 edited_message.splitlines())
+            minus_lines = []
+            plus_lines = []
+            for line in diff:
+                if line.startswith('-'):
+                    line = line[2:]
+                    minus_lines.append(line)
+                elif line.startswith('+'):
+                    line = line[2:]
+                    plus_lines.append(line)
+
+            user_ldif="dn: %s\n" % dn
+            user_ldif += "changetype: modify\n"
+
+            for line in minus_lines:
+                attr, val = line.split(':', 1)
+                search_attr="%s:" % attr
+                if not re.search(r'^' + search_attr, str(plus_lines)):
+                    user_ldif += "delete: %s\n" % attr
+                    user_ldif += "%s: %s\n" % (attr, val)
+
+            for line in plus_lines:
+                attr, val = line.split(':', 1)
+                search_attr="%s:" % attr
+                if re.search(r'^' + search_attr, str(minus_lines)):
+                    user_ldif += "replace: %s\n" % attr
+                    user_ldif += "%s: %s\n" % (attr, val)
+                if not re.search(r'^' + search_attr, str(minus_lines)):
+                    user_ldif += "add: %s\n" % attr
+                    user_ldif += "%s: %s\n" % (attr, val)
+
+            try:
+                self.samdb.modify_ldif(user_ldif)
+            except Exception as e:
+                raise
+        return
+
 class cmd_dfsr_group_list(DfsrCommand):
     """List all DFS-R groups."""
 
@@ -557,6 +622,55 @@ class cmd_dfsr_group_create(DfsrCommand):
         except Exception as e:
             raise CommandError('Failed to create replication group "%s"' %
                                group_name, e)
+        return
+
+class cmd_dfsr_group_edit(DfsrCommand):
+    """Edit a DFS-R group."""
+
+    synopsis = "%prog <group_name> [options]"
+
+    takes_args = ["group_name"]
+
+    takes_optiongroups = {
+        "sambaopts": options.SambaOptions,
+        "credopts": options.CredentialsOptions,
+        "versionopts": options.VersionOptions,
+    }
+
+    takes_options = [
+        Option("-H", "--URL", help="LDB URL for database or target server",
+               type=str, metavar="URL", dest="H"),
+        Option("--editor", help="Editor to use instead of the system default,"
+               " or 'vi' if no system default is set.", type=str),
+       ]
+
+    def run(self, group_name, editor=None, credopts=None, sambaopts=None,
+            versionopts=None, H=None):
+        lp = sambaopts.get_loadparm()
+        creds = credopts.get_credentials(lp, fallback_machine=True)
+        self.samdb = SamDB(url=H, session_info=system_session(),
+                           credentials=creds, lp=lp)
+
+        sfilter = "(&(objectClass=msDFSR-ReplicationGroup)" \
+                   "(name=%s))" % group_name
+
+        domain_dn = self.samdb.domain_dn()
+        dfsr_global_dn = "CN=DFSR-GlobalSettings,CN=System,%s" % domain_dn
+
+        try:
+            res = self.samdb.search(base=dfsr_global_dn,
+                                    expression=sfilter,
+                                    scope=ldb.SCOPE_SUBTREE)
+            group_dn = res[0].dn
+            self.edit_result(group_dn, res, editor=editor)
+        except IndexError:
+            raise CommandError("Unable to find DFS-R group '%s'" % (
+                               group_name))
+        except Exception as e:
+            raise CommandError("Failed to modify DFS-R group '%s': " % (
+                               group_name), e)
+        self.outf.write("Modified DFS-R group '%s' successfully\n" % (
+                        group_name))
         return
 
 class cmd_dfsr_folder_list(DfsrCommand):
@@ -924,6 +1038,7 @@ class cmd_dfsr_group(SuperCommand):
     subcommands = {}
     subcommands["list"] = cmd_dfsr_group_list()
     subcommands["create"] = cmd_dfsr_group_create()
+    subcommands["edit"] = cmd_dfsr_group_edit()
 
 class cmd_dfsr_folder(SuperCommand):
     """DFS Replication (DFS-R) folder management."""
