@@ -1203,6 +1203,142 @@ class cmd_dfsr_connection_create(DfsrCommand):
 
         return
 
+class cmd_dfsr_connection_edit(DfsrCommand):
+    """Edit a DFS-R connection."""
+
+    synopsis = "%prog <group_name> <source> <destination> [options]"
+
+    takes_args = ["group_name", "source", "destination"]
+
+    takes_options = [
+        Option("-H", "--URL", help="LDB URL for database or target server",
+               type=str, metavar="URL", dest="H"),
+        Option("--editor", help="Editor to use instead of the system default,"
+               " or 'vi' if no system default is set.", type=str),
+        ]
+
+    takes_optiongroups = {
+        "sambaopts": options.SambaOptions,
+        "credopts": options.CredentialsOptions,
+        "versionopts": options.VersionOptions,
+        }
+
+    def run(self, group_name, source, destination, editor=None,
+            sambaopts=None, credopts=None, versionopts=None, H=None):
+        lp = sambaopts.get_loadparm()
+        creds = credopts.get_credentials(lp, fallback_machine=True)
+        self.samdb = SamDB(url=H, session_info=system_session(),
+                           credentials=creds, lp=lp)
+
+
+        domain_dn = self.samdb.domain_dn()
+
+        dfsr_global_dn = "CN=DFSR-GlobalSettings,CN=System,%s" % domain_dn
+
+        # Get the group
+        sfilter = "(&(objectClass=msDFSR-ReplicationGroup)" \
+                  "(name=%s))" % (group_name)
+        res = self.samdb.search(dfsr_global_dn, scope=ldb.SCOPE_SUBTREE,
+                                expression=sfilter, attrs=["objectGUID"])
+
+        if (len(res) == 0):
+            raise CommandError("Unable to find DFS-R group '%s'" % (
+                               group_name))
+
+        assert(len(res) == 1)
+
+        group_dn = res[0].dn
+        bin_group_guid = res[0].get("objectGUID", idx=0)
+        group_guid = self.samdb.guid2hexstring(bin_group_guid)
+
+        # Get destination computer
+        sfilter = "(&(objectClass=computer)(name=%s))" % destination
+        res = self.samdb.search(domain_dn, scope=ldb.SCOPE_SUBTREE,
+                                expression=sfilter, attrs=[])
+        if len(res) == 0:
+            raise CommandError("Unable to find computer '%s'" % (
+                               destination))
+
+        assert(len(res) == 1)
+
+        dest_computer_dn = res[0].dn
+
+        # Get destination local settings
+        sfilter="(objectclass=msDFSR-LocalSettings)"
+        res = self.samdb.search(dest_computer_dn, scope=ldb.SCOPE_SUBTREE,
+                                expression=sfilter, attrs=[])
+        if (len(res) == 0):
+            raise CommandError("Computer '%s' is not a member of replication group" % (
+                               destination))
+
+        assert(len(res) == 1)
+
+        dest_dfsr_local_dn = res[0].dn
+
+        # Get destination subscriber
+        sfilter = "(&(objectClass=msDFSR-Subscriber)" \
+                  "(msDFSR-ReplicationGroupGuid=%s))" % group_guid
+        res = self.samdb.search(dest_dfsr_local_dn, scope=ldb.SCOPE_SUBTREE,
+                                expression=sfilter, attrs=["msDFSR-MemberReference"])
+        if (len(res) == 0):
+            raise CommandError('Computer "%s" is not a member of replication group' % (
+                               destination))
+
+        assert(len(res) == 1)
+
+        destination_member_dn = res[0].get("msDFSR-MemberReference", idx=0)
+
+        # Get source computer
+        sfilter = "(&(objectClass=computer)(name=%s))" % source
+        res = self.samdb.search(domain_dn, scope=ldb.SCOPE_SUBTREE,
+                                expression=sfilter, attrs=[])
+        if len(res) == 0:
+            raise CommandError("Unable to find computer '%s'" % (
+                               source))
+
+        assert(len(res) == 1)
+
+        source_computer_dn = res[0].dn
+
+        # Get source local settings
+        sfilter="(objectclass=msDFSR-LocalSettings)"
+        res = self.samdb.search(source_computer_dn, scope=ldb.SCOPE_SUBTREE,
+                                expression=sfilter, attrs=[])
+        if (len(res) == 0):
+            raise CommandError('Computer "%s" is not a member of replication group' % (
+                               source))
+
+        assert(len(res) == 1)
+
+        source_dfsr_local_dn = res[0].dn
+
+        # Get source subscriber
+        sfilter = "(&(objectClass=msDFSR-Subscriber)" \
+                  "(msDFSR-ReplicationGroupGuid=%s))" % group_guid
+        res = self.samdb.search(source_dfsr_local_dn, scope=ldb.SCOPE_SUBTREE,
+                                expression=sfilter, attrs=["msDFSR-MemberReference"])
+        if (len(res) == 0):
+            raise CommandError('Computer "%s" is not a member of replication group' % (
+                               source))
+
+        assert(len(res) == 1)
+
+        source_member_dn = res[0].get("msDFSR-MemberReference", idx=0)
+
+        # Check if connections already exists
+        sfilter = "(&(objectClass=msDFSR-Connection)" \
+                  "(fromServer=%s))" % source_member_dn
+        res = self.samdb.search(destination_member_dn, scope=ldb.SCOPE_SUBTREE,
+                                expression=sfilter)
+        try:
+            dn = res[0].dn
+            self.edit_result(dn, res, editor=editor)
+        except Exception as e:
+            raise CommandError("Failed to modify DFS-R connection", e)
+        self.outf.write("Modified DFS-R connection successfully\n")
+
+        return
+
 class cmd_dfsr_group(SuperCommand):
     """DFS Replication (DFS-R) group management."""
 
@@ -1240,6 +1376,7 @@ class cmd_dfsr_connection(SuperCommand):
     subcommands = {}
     subcommands["list"] = cmd_dfsr_connection_list()
     subcommands["create"] = cmd_dfsr_connection_create()
+    subcommands["edit"] = cmd_dfsr_connection_edit()
 
 class cmd_dfsr(SuperCommand):
     """DFS Replication (DFS-R) management"""
