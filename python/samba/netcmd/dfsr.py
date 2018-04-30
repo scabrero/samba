@@ -1010,6 +1010,105 @@ class cmd_dfsr_subscription_add(DfsrCommand):
 
         return
 
+class cmd_dfsr_subscription_edit(DfsrCommand):
+    """Edit a DFS-R subscription."""
+
+    synopsis = "%prog <group_name> <folder_name> <computer_name> [options]"
+
+    takes_args = ["group_name", "folder_name", "computer_name"]
+
+    takes_optiongroups = {
+        "sambaopts": options.SambaOptions,
+        "credopts": options.CredentialsOptions,
+        "versionopts": options.VersionOptions,
+    }
+
+    takes_options = [
+        Option("-H", "--URL", help="LDB URL for database or target server",
+               type=str, metavar="URL", dest="H"),
+        Option("--editor", help="Editor to use instead of the system default,"
+               " or 'vi' if no system default is set.", type=str),
+       ]
+
+    def run(self, group_name, folder_name, computer_name, editor=None,
+            credopts=None, sambaopts=None, versionopts=None, H=None):
+        lp = sambaopts.get_loadparm()
+        creds = credopts.get_credentials(lp, fallback_machine=True)
+        self.samdb = SamDB(url=H, session_info=system_session(),
+                           credentials=creds, lp=lp)
+
+        domain_dn = self.samdb.domain_dn()
+
+        # Get group
+        dfsr_global_dn = "CN=DFSR-GlobalSettings,CN=System,%s" % domain_dn
+
+        sfilter = "(&(objectClass=msDFSR-ReplicationGroup)" \
+                   "(name=%s))" % group_name
+        res = self.samdb.search(dfsr_global_dn, scope=ldb.SCOPE_SUBTREE,
+                                expression=sfilter, attrs=[])
+        if (len(res) == 0):
+            raise CommandError("Unable to find DFS-R group '%s'" % (
+                               group_name))
+
+        assert (len(res) == 1)
+
+        group_dn = res[0].dn
+
+        # Get content container
+        res = self.samdb.search(group_dn, scope=ldb.SCOPE_SUBTREE,
+                                expression="(objectClass=msDFSR-Content)",
+                                attrs=[])
+        if (len(res) == 0):
+            raise CommandError("Unable to find DFS-R group '%s' content" % (
+                               group_name))
+
+        assert(len(res) == 1)
+
+        content_dn = res[0].dn
+
+        # Get folder
+        sfilter = "(&(objectClass=msDFSR-ContentSet)(name=%s))" % (
+                  folder_name)
+        res = self.samdb.search(content_dn, scope=ldb.SCOPE_SUBTREE,
+                                expression=sfilter, attrs=["objectGUID"])
+
+        if (len(res) == 0):
+            raise CommandError("Unable to find DFS-R folder '%s'" % (
+                               folder_name))
+
+        assert(len(res) == 1)
+
+        bin_folder_guid = res[0].get("objectGUID", idx=0)
+        folder_guid = self.samdb.guid2hexstring(bin_folder_guid)
+
+        # Get computer account
+        sfilter = "(&(objectClass=computer)(name=%s))" % computer_name
+        res = self.samdb.search(domain_dn, scope=ldb.SCOPE_SUBTREE,
+                                expression=sfilter)
+        if (len(res) == 0):
+            raise CommandError("Unable to find computer '%s'" % (
+                               computer_name))
+
+        assert(len(res) == 1)
+
+        computer_dn = res[0].dn
+
+        # Get subscriber to folder
+        sfilter = "(&(objectClass=msDFSR-Subscription)" \
+                  "(msDFSR-ContentSetGuid=%s))" % folder_guid
+        res = self.samdb.search(computer_dn, scope=ldb.SCOPE_SUBTREE,
+                                expression=sfilter)
+        if (len(res) == 0):
+            raise CommandError("Unable to find subscription to folder '%s'" % (
+                               folder_name))
+        try:
+            dn = res[0].dn
+            self.edit_result(dn, res, editor=editor)
+        except Exception as e:
+            raise CommandError("Failed to modify DFS-R subscription", e)
+        self.outf.write("Modified DFS-R subscription successfully\n")
+        return
+
 class cmd_dfsr_connection_list(DfsrCommand):
     """List DFS-R connections."""
 
@@ -1133,6 +1232,7 @@ class cmd_dfsr_subscription(SuperCommand):
     subcommands = {}
     subcommands["list"] = cmd_dfsr_subscription_list()
     subcommands["add"] = cmd_dfsr_subscription_add()
+    subcommands["edit"] = cmd_dfsr_subscription_edit()
 
 class cmd_dfsr_connection(SuperCommand):
     """DFS Replication (DFS-R) connection management."""
