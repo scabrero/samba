@@ -759,6 +759,78 @@ class cmd_dfsr_folder_create(DfsrCommand):
                                  folder_name=folder_name)
         return
 
+class cmd_dfsr_folder_edit(DfsrCommand):
+    """Edit a DFS-R folder."""
+
+    synopsis = "%prog <group_name> <folder_name> [options]"
+
+    takes_args = ["group_name", "folder_name"]
+
+    takes_optiongroups = {
+        "sambaopts": options.SambaOptions,
+        "credopts": options.CredentialsOptions,
+        "versionopts": options.VersionOptions,
+    }
+
+    takes_options = [
+        Option("-H", "--URL", help="LDB URL for database or target server",
+               type=str, metavar="URL", dest="H"),
+        Option("--editor", help="Editor to use instead of the system default,"
+               " or 'vi' if no system default is set.", type=str),
+       ]
+
+    def run(self, group_name, folder_name, editor=None, credopts=None,
+            sambaopts=None, versionopts=None, H=None):
+        lp = sambaopts.get_loadparm()
+        creds = credopts.get_credentials(lp, fallback_machine=True)
+        self.samdb = SamDB(url=H, session_info=system_session(),
+                           credentials=creds, lp=lp)
+
+        domain_dn = self.samdb.domain_dn()
+        dfsr_global_dn = "CN=DFSR-GlobalSettings,CN=System,%s" % domain_dn
+
+        sfilter = "(&(objectClass=msDFSR-ReplicationGroup)" \
+                   "(name=%s))" % group_name
+        res = self.samdb.search(dfsr_global_dn, scope=ldb.SCOPE_SUBTREE,
+                                expression=sfilter, attrs=[])
+        if (len(res) == 0):
+            raise CommandError("Unable to find DFS-R group '%s'" % (
+                               group_name))
+
+        assert (len(res) == 1)
+
+        group_dn = res[0].dn
+
+        res = self.samdb.search(group_dn, scope=ldb.SCOPE_SUBTREE,
+                                expression="(objectClass=msDFSR-Content)",
+                                attrs=[])
+        if (len(res) == 0):
+            raise CommandError("Unable to find DFS-R group '%s' content" % (
+                               group_name))
+
+        assert(len(res) == 1)
+
+        content_dn = res[0].dn
+
+        sfilter = "(&(objectClass=msDFSR-ContentSet)(name=%s))" % (
+                  folder_name)
+        res = self.samdb.search(content_dn, scope=ldb.SCOPE_SUBTREE,
+                                expression=sfilter)
+
+        if (len(res) == 0):
+            raise CommandError("Unable to find DFS-R folder '%s' content" % (
+                               folder_name))
+
+        try:
+            folder_dn = res[0].dn
+            self.edit_result(folder_dn, res, editor=editor)
+        except Exception as e:
+            raise CommandError("Failed to modify DFS-R group '%s': " % (
+                               group_name), e)
+        self.outf.write("Modified DFS-R group '%s' successfully\n" % (
+                        group_name))
+        return
+
 class cmd_dfsr_member_list(DfsrCommand):
     """List DFS-R group members."""
 
@@ -1046,6 +1118,7 @@ class cmd_dfsr_folder(SuperCommand):
     subcommands = {}
     subcommands["list"] = cmd_dfsr_folder_list()
     subcommands["create"] = cmd_dfsr_folder_create()
+    subcommands["edit"] = cmd_dfsr_folder_edit()
 
 class cmd_dfsr_member(SuperCommand):
     """DFS Replication (DFS-R) member management."""

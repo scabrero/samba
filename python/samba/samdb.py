@@ -1623,7 +1623,7 @@ schemaUpdateNow: 1
 
         content_dn = res[0].dn
 
-        search_filter = "(&(objectClass=msDFSR-Content)(name=%s))" % (
+        search_filter = "(&(objectClass=msDFSR-ContentSet)(name=%s))" % (
                         folder_name)
         res = self.search(content_dn, scope=ldb.SCOPE_SUBTREE,
                           expression=search_filter, attrs=[])
