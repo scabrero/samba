@@ -2039,6 +2039,117 @@ schemaUpdateNow: 1
             self.transaction_commit()
         return
 
+    def dfsr_connection_delete(self, group_name, source, destination):
+        domain_dn = self.domain_dn()
+
+        dfsr_global_dn = "CN=DFSR-GlobalSettings,CN=System,%s" % domain_dn
+
+        # Get the group
+        sfilter = "(&(objectClass=msDFSR-ReplicationGroup)" \
+                  "(name=%s))" % (group_name)
+        res = self.search(dfsr_global_dn, scope=ldb.SCOPE_SUBTREE,
+                          expression=sfilter, attrs=["objectGUID"])
+
+        if (len(res) == 0):
+            raise Exception("Unable to find DFS-R group '%s'" % (
+                            group_name))
+
+        assert(len(res) == 1)
+
+        group_dn = res[0].dn
+        bin_group_guid = res[0].get("objectGUID", idx=0)
+        group_guid = self.guid2hexstring(bin_group_guid)
+
+        # Get destination computer
+        sfilter = "(&(objectClass=computer)(name=%s))" % destination
+        res = self.search(domain_dn, scope=ldb.SCOPE_SUBTREE,
+                          expression=sfilter, attrs=[])
+        if len(res) == 0:
+            raise Exception("Unable to find computer '%s'" % (destination))
+
+        assert(len(res) == 1)
+
+        dest_computer_dn = res[0].dn
+
+        # Get destination local settings
+        sfilter="(objectclass=msDFSR-LocalSettings)"
+        res = self.search(dest_computer_dn, scope=ldb.SCOPE_SUBTREE,
+                          expression=sfilter, attrs=[])
+        if (len(res) == 0):
+            raise Exception("Computer '%s' is not a member of replication group" % (
+                            destination))
+
+        assert(len(res) == 1)
+
+        dest_dfsr_local_dn = res[0].dn
+
+        # Get destination subscriber
+        sfilter = "(&(objectClass=msDFSR-Subscriber)" \
+                  "(msDFSR-ReplicationGroupGuid=%s))" % group_guid
+        res = self.search(dest_dfsr_local_dn, scope=ldb.SCOPE_SUBTREE,
+                          expression=sfilter, attrs=["msDFSR-MemberReference"])
+        if (len(res) == 0):
+            raise Exception("Computer '%s' is not a member of replication group" % (
+                            destination))
+
+        assert(len(res) == 1)
+
+        destination_member_dn = res[0].get("msDFSR-MemberReference", idx=0)
+
+        # Get source computer
+        sfilter = "(&(objectClass=computer)(name=%s))" % source
+        res = self.search(domain_dn, scope=ldb.SCOPE_SUBTREE,
+                          expression=sfilter, attrs=[])
+        if len(res) == 0:
+            raise Exception("Unable to find computer '%s'" % (source))
+
+        assert(len(res) == 1)
+
+        source_computer_dn = res[0].dn
+
+        # Get source local settings
+        sfilter="(objectclass=msDFSR-LocalSettings)"
+        res = self.search(source_computer_dn, scope=ldb.SCOPE_SUBTREE,
+                          expression=sfilter, attrs=[])
+        if (len(res) == 0):
+            raise Exception("Computer '%s' is not a member of replication group" % (
+                            source))
+
+        assert(len(res) == 1)
+
+        source_dfsr_local_dn = res[0].dn
+
+        # Get source subscriber
+        sfilter = "(&(objectClass=msDFSR-Subscriber)" \
+                  "(msDFSR-ReplicationGroupGuid=%s))" % group_guid
+        res = self.search(source_dfsr_local_dn, scope=ldb.SCOPE_SUBTREE,
+                          expression=sfilter, attrs=["msDFSR-MemberReference"])
+        if (len(res) == 0):
+            raise Exception("Computer '%s' is not a member of replication group" % (
+                            source))
+
+        assert(len(res) == 1)
+
+        source_member_dn = res[0].get("msDFSR-MemberReference", idx=0)
+
+        # Check if connections already exists
+        sfilter = "(&(objectClass=msDFSR-Connection)" \
+                  "(fromServer=%s))" % source_member_dn
+        self.transaction_start()
+        try:
+            res = self.search(destination_member_dn, scope=ldb.SCOPE_SUBTREE,
+                              expression=sfilter)
+            if len(res) == 0:
+                raise Exception("Unable to find connection")
+            assert(len(res) == 1)
+            self.delete(res[0].dn)
+        except:
+            self.transaction_cancel()
+            raise
+        else:
+            self.transaction_commit()
+        return
+
 class dsdb_Dn(object):
     '''a class for binary DN'''
 
