@@ -2150,6 +2150,78 @@ schemaUpdateNow: 1
             self.transaction_commit()
         return
 
+    def dfsr_subscription_delete(self, group_name, folder_name, computer_name):
+        domain_dn = self.domain_dn()
+
+        # Get group
+        dfsr_global_dn = "CN=DFSR-GlobalSettings,CN=System,%s" % domain_dn
+
+        sfilter = "(&(objectClass=msDFSR-ReplicationGroup)" \
+                   "(name=%s))" % group_name
+        res = self.search(dfsr_global_dn, scope=ldb.SCOPE_SUBTREE,
+                          expression=sfilter, attrs=[])
+        if (len(res) == 0):
+            raise Exception("Unable to find DFS-R group '%s'" % (group_name))
+
+        assert (len(res) == 1)
+
+        group_dn = res[0].dn
+
+        # Get content container
+        res = self.search(group_dn, scope=ldb.SCOPE_SUBTREE,
+                          expression="(objectClass=msDFSR-Content)",
+                          attrs=[])
+        if (len(res) == 0):
+            raise Exception("Unable to find DFS-R group '%s' content" % (
+                            group_name))
+
+        assert(len(res) == 1)
+
+        content_dn = res[0].dn
+
+        # Get folder
+        sfilter = "(&(objectClass=msDFSR-ContentSet)(name=%s))" % (
+                  folder_name)
+        res = self.search(content_dn, scope=ldb.SCOPE_SUBTREE,
+                          expression=sfilter, attrs=["objectGUID"])
+
+        if (len(res) == 0):
+            raise Exception("Unable to find DFS-R folder '%s'" % (folder_name))
+
+        assert(len(res) == 1)
+
+        bin_folder_guid = res[0].get("objectGUID", idx=0)
+        folder_guid = self.guid2hexstring(bin_folder_guid)
+
+        # Get computer account
+        sfilter = "(&(objectClass=computer)(name=%s))" % computer_name
+        res = self.search(domain_dn, scope=ldb.SCOPE_SUBTREE,
+                          expression=sfilter)
+        if (len(res) == 0):
+            raise Exception("Unable to find computer '%s'" % (computer_name))
+
+        assert(len(res) == 1)
+
+        computer_dn = res[0].dn
+
+        # Get subscriber to folder
+        sfilter = "(&(objectClass=msDFSR-Subscription)" \
+                  "(msDFSR-ContentSetGuid=%s))" % folder_guid
+        self.transaction_start()
+        try:
+            res = self.search(computer_dn, scope=ldb.SCOPE_SUBTREE,
+                              expression=sfilter)
+            if len(res) == 0:
+                raise Exception("Unable to find subscription")
+            assert(len(res) == 1)
+            self.delete(res[0].dn)
+        except:
+            self.transaction_cancel()
+            raise
+        else:
+            self.transaction_commit()
+        return
+
 class dsdb_Dn(object):
     '''a class for binary DN'''
 
