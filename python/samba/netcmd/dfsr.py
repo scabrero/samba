@@ -673,6 +673,39 @@ class cmd_dfsr_group_edit(DfsrCommand):
                         group_name))
         return
 
+class cmd_dfsr_group_delete(DfsrCommand):
+    """Delete a DFS-R group."""
+
+    synopsis = "%prog <group_name> [options]"
+
+    takes_args = ["group_name"]
+
+    takes_options = [
+        Option("-H", "--URL", help="LDB URL for database or target server",
+               type=str, metavar="URL", dest="H"),
+        ]
+
+    takes_optiongroups = {
+        "sambaopts": options.SambaOptions,
+        "credopts": options.CredentialsOptions,
+        "versionopts": options.VersionOptions,
+        }
+
+    def run(self, group_name, sambaopts=None, credopts=None, versionopts=None,
+            H=None):
+        lp = sambaopts.get_loadparm()
+        creds = credopts.get_credentials(lp, fallback_machine=True)
+        samdb = SamDB(url=H, session_info=system_session(),
+                      credentials=creds, lp=lp)
+
+        try:
+            samdb.dfsr_group_delete(group_name)
+        except Exception as e:
+            raise CommandError("Failed to delete DFS-R group", e)
+
+        self.outf.write("Deleted DFS-R group successfully\n")
+        return
+
 class cmd_dfsr_folder_list(DfsrCommand):
     """List DFS-R group folders."""
 
@@ -1479,6 +1512,7 @@ class cmd_dfsr_group(SuperCommand):
     subcommands["list"] = cmd_dfsr_group_list()
     subcommands["create"] = cmd_dfsr_group_create()
     subcommands["edit"] = cmd_dfsr_group_edit()
+    subcommands["delete"] = cmd_dfsr_group_delete()
 
 class cmd_dfsr_folder(SuperCommand):
     """DFS Replication (DFS-R) folder management."""
