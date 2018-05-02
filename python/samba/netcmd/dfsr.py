@@ -898,6 +898,39 @@ class cmd_dfsr_member_add(DfsrCommand):
         self.print_members(group_name=group_name, computer_name=computer_name)
         return
 
+class cmd_dfsr_member_delete(DfsrCommand):
+    """Delete a DFS-R member."""
+
+    synopsis = "%prog <group_name> <computer_name> [options]"
+
+    takes_args = ["group_name", "computer_name"]
+
+    takes_options = [
+        Option("-H", "--URL", help="LDB URL for database or target server",
+               type=str, metavar="URL", dest="H"),
+        ]
+
+    takes_optiongroups = {
+        "sambaopts": options.SambaOptions,
+        "credopts": options.CredentialsOptions,
+        "versionopts": options.VersionOptions,
+        }
+
+    def run(self, group_name, computer_name, sambaopts=None,
+            credopts=None, versionopts=None, H=None):
+        lp = sambaopts.get_loadparm()
+        creds = credopts.get_credentials(lp, fallback_machine=True)
+        samdb = SamDB(url=H, session_info=system_session(),
+                      credentials=creds, lp=lp)
+
+        try:
+            samdb.dfsr_member_delete(group_name, computer_name)
+        except Exception as e:
+            raise CommandError("Failed to delete DFS-R connection", e)
+
+        self.outf.write("Deleted DFS-R member successfully\n")
+        return
+
 class cmd_dfsr_subscription_list(DfsrCommand):
     """List DFS-R replication group member subscriptions."""
 
@@ -1134,6 +1167,7 @@ class cmd_dfsr_subscription_delete(DfsrCommand):
         samdb = SamDB(url=H, session_info=system_session(),
                       credentials=creds, lp=lp)
         try:
+            # Delete subscription
             samdb.dfsr_subscription_delete(group_name, folder_name,
                                            computer_name)
         except Exception as e:
@@ -1427,6 +1461,7 @@ class cmd_dfsr_member(SuperCommand):
     subcommands = {}
     subcommands["list"] = cmd_dfsr_member_list()
     subcommands["add"] = cmd_dfsr_member_add()
+    subcommands["delete"] = cmd_dfsr_member_delete()
 
 class cmd_dfsr_subscription(SuperCommand):
     """DFS Replication (DFS-R) subscription management."""

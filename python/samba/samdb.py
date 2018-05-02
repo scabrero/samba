@@ -2222,6 +2222,96 @@ schemaUpdateNow: 1
             self.transaction_commit()
         return
 
+    def dfsr_member_delete(self, group_name, computer_name):
+        domain_dn = self.domain_dn()
+        dfsr_global_dn = "CN=DFSR-GlobalSettings,CN=System,%s" % domain_dn
+
+        # Search the group
+        sfilter = "(&(objectClass=msDFSR-ReplicationGroup)" \
+                  "(name=%s))" % (group_name)
+        res = self.search(dfsr_global_dn, scope=ldb.SCOPE_SUBTREE,
+                          expression=sfilter, attrs=["objectGUID"])
+
+        if (len(res) == 0):
+            raise Exception("Unable to find DFS-R group '%s'" % group_name)
+
+        assert(len(res) == 1)
+
+        group_dn = res[0].dn
+        bin_group_guid = res[0].get("objectGUID", idx=0)
+        group_guid = self.guid2hexstring(bin_group_guid)
+
+        # Search computer account
+        sfilter = "(&(objectClass=computer)(name=%s))" % computer_name
+        res = self.search(domain_dn, scope=ldb.SCOPE_SUBTREE,
+                          expression=sfilter, attrs=[])
+        if len(res) == 0:
+            raise Exception("Unable to find computer '%s'" % computer_name)
+
+        assert(len(res) == 1)
+
+        computer_dn = res[0].dn
+
+        # Search the subscriber to delete
+        sfilter = "(&(objectClass=msDFSR-Subscriber)" \
+                  "(msDFSR-ReplicationGroupGuid=%s))" % group_guid
+        res = self.search(computer_dn, scope=ldb.SCOPE_SUBTREE,
+                          expression=sfilter,
+                          attrs=["msDFSR-MemberReference"])
+        if len(res) == 0:
+            raise Exception("Computer '%s' is not member of replication " \
+                            "group %s" % (computer_name, group_name))
+
+        assert(len(res) == 1)
+
+        subscriber_dn = res[0].dn
+        membership_dn = res[0].get("msDFSR-MemberReference", idx=0)
+
+        # Find group's topology
+        sfilter = "(objectClass=msDFSR-Topology)"
+        res = self.search(group_dn, scope=ldb.SCOPE_SUBTREE,
+                          expression=sfilter, attrs=[])
+        if (len(res) == 0):
+            raise Exception("Unable to find group '%s' topology" % group_name)
+
+        assert(len(res) == 1)
+
+        topology_dn = res[0].dn
+
+        self.transaction_start()
+        try:
+            # Delete member's connections where source is the member to delete
+            sfilter = "(&(objectClass=msDFSR-Connection)" \
+                      "(fromServer=%s))" % membership_dn
+            res = self.search(topology_dn, scope=ldb.SCOPE_SUBTREE,
+                              expression=sfilter, attrs=[])
+            for conn in res:
+                self.delete(conn.dn)
+
+            # Delete member's connection
+            sfilter = "(objectClass=msDFSR-Connection)"
+            res = self.search(membership_dn, scope=ldb.SCOPE_SUBTREE,
+                              expression=sfilter, attrs=[])
+            for conn in res:
+                self.delete(conn.dn)
+
+            # Delete member's subscriptions
+            sfilter = "(objectClass=msDFSR-Subscription)"
+            res = self.search(subscriber_dn, scope=ldb.SCOPE_SUBTREE,
+                              expression=sfilter, attrs=[])
+            for subscription in res:
+                self.delete(subscription.dn)
+
+            # Delete subscriber and member
+            self.delete(subscriber_dn)
+            self.delete(membership_dn)
+        except:
+            self.transaction_cancel()
+            raise
+        else:
+            self.transaction_commit()
+        return
+
 class dsdb_Dn(object):
     '''a class for binary DN'''
 
