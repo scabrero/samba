@@ -1109,6 +1109,39 @@ class cmd_dfsr_subscription_edit(DfsrCommand):
         self.outf.write("Modified DFS-R subscription successfully\n")
         return
 
+class cmd_dfsr_subscription_delete(DfsrCommand):
+    """Delete a DFS-R subscription."""
+
+    synopsis = "%prog <group_name> <folder_name> <computer_name> [options]"
+
+    takes_args = ["group_name", "folder_name", "computer_name"]
+
+    takes_options = [
+        Option("-H", "--URL", help="LDB URL for database or target server",
+               type=str, metavar="URL", dest="H"),
+        ]
+
+    takes_optiongroups = {
+        "sambaopts": options.SambaOptions,
+        "credopts": options.CredentialsOptions,
+        "versionopts": options.VersionOptions,
+        }
+
+    def run(self, group_name, folder_name, computer_name, sambaopts=None,
+            credopts=None, versionopts=None, H=None):
+        lp = sambaopts.get_loadparm()
+        creds = credopts.get_credentials(lp, fallback_machine=True)
+        samdb = SamDB(url=H, session_info=system_session(),
+                      credentials=creds, lp=lp)
+        try:
+            samdb.dfsr_subscription_delete(group_name, folder_name,
+                                           computer_name)
+        except Exception as e:
+            raise CommandError("Failed to delete DFS-R subscription", e)
+
+        self.outf.write("Deleted DFS-R subscription successfully\n")
+        return
+
 class cmd_dfsr_connection_list(DfsrCommand):
     """List DFS-R connections."""
 
@@ -1402,6 +1435,7 @@ class cmd_dfsr_subscription(SuperCommand):
     subcommands["list"] = cmd_dfsr_subscription_list()
     subcommands["add"] = cmd_dfsr_subscription_add()
     subcommands["edit"] = cmd_dfsr_subscription_edit()
+    subcommands["delete"] = cmd_dfsr_subscription_delete()
 
 class cmd_dfsr_connection(SuperCommand):
     """DFS Replication (DFS-R) connection management."""
