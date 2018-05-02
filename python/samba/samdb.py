@@ -2398,6 +2398,87 @@ schemaUpdateNow: 1
             self.transaction_commit()
         return
 
+    def dfsr_group_delete(self, group_name):
+        domain_dn = self.domain_dn()
+        dfsr_global_dn = "CN=DFSR-GlobalSettings,CN=System,%s" % domain_dn
+
+        # Search the group
+        sfilter = "(&(objectClass=msDFSR-ReplicationGroup)" \
+                  "(name=%s))" % (group_name)
+        res = self.search(dfsr_global_dn, scope=ldb.SCOPE_SUBTREE,
+                          expression=sfilter,
+                          attrs=["msDFSR-ReplicationGroupType"])
+
+        if (len(res) == 0):
+            raise Exception("Unable to find DFS-R group '%s'" % group_name)
+
+        assert(len(res) == 1)
+
+        # Do not allow to delete SYSVOL
+        if int(res[0].get("msDFSR-ReplicationGroupType", idx=0)) == 1:
+                raise Exception("SYSVOL replication group cannot be deleted")
+
+        group_dn = res[0].dn
+
+        # Search group's topology
+        sfilter = "(objectClass=msDFSR-Topology)"
+        res = self.search(group_dn, scope=ldb.SCOPE_SUBTREE,
+                          expression=sfilter, attrs=[])
+        if (len(res) == 0):
+            raise Exception("Unable to find group '%s' topology" % group_name)
+
+        assert(len(res) == 1)
+
+        topology_dn = res[0].dn
+
+        # Search group's content container
+        sfilter = "(objectClass=msDFSR-Content)"
+        res = self.search(group_dn, scope=ldb.SCOPE_SUBTREE,
+                          expression=sfilter, attrs=[])
+        if (len(res) == 0):
+            raise Exception("Unable to find DFS-R group '%s' content" % (
+                            group_name))
+
+        assert(len(res) == 1)
+
+        content_dn = res[0].dn
+
+        self.transaction_start()
+        try:
+            # Remove all folders, which will remove all subscriptions
+            sfilter = "(objectClass=msDFSR-ContentSet)"
+            res = self.search(content_dn, scope=ldb.SCOPE_SUBTREE,
+                              expression=sfilter, attrs=["name"])
+            for folder in res:
+                folder_name = folder.get("name", idx=0)
+                self.dfsr_folder_delete(group_name, folder_name)
+
+            # Remove all members, which will remove all connections
+            sfilter = "(objectClass=msDFSR-Member)"
+            res = self.search(topology_dn, scope=ldb.SCOPE_SUBTREE,
+                              expression=sfilter,
+                              attrs=["msDFSR-ComputerReference"])
+            for member in res:
+                computer_dn = member.get("msDFSR-ComputerReference", idx=0)
+                res2 = self.search(computer_dn, scope=ldb.SCOPE_BASE,
+                                   attrs=["name"])
+                assert(len(res2) == 1)
+                computer_name = res2[0].get("name", idx=0)
+                self.dfsr_member_delete(group_name, computer_name)
+
+            # Remove containers
+            self.delete(topology_dn)
+            self.delete(content_dn)
+
+            # Remove group
+            self.delete(group_dn)
+        except:
+            self.transaction_cancel()
+            raise
+        else:
+            self.transaction_commit()
+        return
+
 class dsdb_Dn(object):
     '''a class for binary DN'''
 
