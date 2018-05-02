@@ -2312,6 +2312,92 @@ schemaUpdateNow: 1
             self.transaction_commit()
         return
 
+    def dfsr_folder_delete(self, group_name, folder_name):
+        domain_dn = self.domain_dn()
+        dfsr_global_dn = "CN=DFSR-GlobalSettings,CN=System,%s" % domain_dn
+
+        # Search the group
+        sfilter = "(&(objectClass=msDFSR-ReplicationGroup)" \
+                  "(name=%s))" % (group_name)
+        res = self.search(dfsr_global_dn, scope=ldb.SCOPE_SUBTREE,
+                          expression=sfilter, attrs=["objectGUID"])
+
+        if (len(res) == 0):
+            raise Exception("Unable to find DFS-R group '%s'" % group_name)
+
+        assert(len(res) == 1)
+
+        group_dn = res[0].dn
+        bin_group_guid = res[0].get("objectGUID", idx=0)
+        group_guid = self.guid2hexstring(bin_group_guid)
+
+        # Search group's topology
+        sfilter = "(objectClass=msDFSR-Topology)"
+        res = self.search(group_dn, scope=ldb.SCOPE_SUBTREE,
+                          expression=sfilter, attrs=[])
+        if (len(res) == 0):
+            raise Exception("Unable to find group '%s' topology" % group_name)
+
+        assert(len(res) == 1)
+
+        topology_dn = res[0].dn
+
+        # Search group's content container
+        sfilter = "(objectClass=msDFSR-Content)"
+        res = self.search(group_dn, scope=ldb.SCOPE_SUBTREE,
+                          expression=sfilter, attrs=[])
+        if (len(res) == 0):
+            raise Exception("Unable to find DFS-R group '%s' content" % (
+                            group_name))
+
+        assert(len(res) == 1)
+
+        content_dn = res[0].dn
+
+        # Search folder
+        sfilter = "(&(objectClass=msDFSR-ContentSet)" \
+                  "(name=%s))" % folder_name
+        res = self.search(content_dn, scope=ldb.SCOPE_SUBTREE,
+                          expression=sfilter, attrs=["objectGUID"])
+
+        if (len(res) == 0):
+            raise Exception("Unable to find DFS-R folder '%s'" % folder_name)
+
+        assert(len(res) == 1)
+
+        folder_dn = res[0].dn
+        bin_folder_guid = res[0].get("objectGUID", idx=0)
+        folder_guid = self.guid2hexstring(bin_folder_guid)
+
+        self.transaction_start()
+        try:
+            # Search group members
+            sfilter = "(objectClass=msDFSR-Member)"
+            res = self.search(topology_dn, scope=ldb.SCOPE_SUBTREE,
+                              expression=sfilter,
+                              attrs=["msDFSR-ComputerReference"])
+            for member in res:
+                computer_dn = member.get("msDFSR-ComputerReference", idx=0)
+
+                # Delete subscriptions to the folder
+                sfilter = "(&(objectClass=msDFSR-Subscription)" \
+                          "(msDFSR-ReplicationGroupGuid=%s)" \
+                          "(msDFSR-ContentSetGuid=%s))" % (group_guid,
+                          folder_guid)
+                res2 = self.search(computer_dn, scope=ldb.SCOPE_SUBTREE,
+                                   expression=sfilter, attrs=[])
+                for subscription in res2:
+                    self.delete(subscription.dn)
+
+            # Delete the folder
+            self.delete(folder_dn)
+        except:
+            self.transaction_cancel()
+            raise
+        else:
+            self.transaction_commit()
+        return
+
 class dsdb_Dn(object):
     '''a class for binary DN'''
 
