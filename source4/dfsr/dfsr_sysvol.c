@@ -60,6 +60,23 @@ static NTSTATUS dfsrsrv_sysvol_join(TALLOC_CTX *mem_ctx,
 		return NT_STATUS_OK;
 	}
 
+	/* Build the sysvol path in persistent storage */
+	lp_sysvol = lpcfg_service(service->task->lp_ctx , "sysvol");
+	sysvol_path = lpcfg_path(lp_sysvol, lpcfg_default_service(
+			service->task->lp_ctx), mem_ctx);
+	if (sysvol_path == NULL || strlen(sysvol_path) == 0) {
+		DEBUG(0, ("dfsrsrv: Failed to get sysvol path\n"));
+		status = NT_STATUS_NOT_FOUND;
+		goto fail;
+	}
+
+	sysvol_path = talloc_asprintf(mem_ctx, "%s/%s", sysvol_path,
+			lpcfg_dnsdomain(service->task->lp_ctx));
+	if (sysvol_path == NULL) {
+		status = NT_STATUS_NO_MEMORY;
+		goto fail;
+	}
+
 	DEBUG(2, ("dfsrsrv: Adding ourselves as a member of sysvol "
 		  "replication group\n"));
 
@@ -207,23 +224,6 @@ static NTSTATUS dfsrsrv_sysvol_join(TALLOC_CTX *mem_ctx,
 		DEBUG(0, ("dfsrsrv: Failed to add message attribute: %s\n",
 			  ldb_errstring(service->samdb)));
 		status = dsdb_ldb_err_to_ntstatus(ret);
-		goto fail;
-	}
-
-	/* Build the sysvol path in persistent storage */
-	lp_sysvol = lpcfg_service(service->task->lp_ctx , "sysvol");
-	sysvol_path = lpcfg_path(lp_sysvol, lpcfg_default_service(
-			service->task->lp_ctx), mem_ctx);
-	if (sysvol_path == NULL) {
-		DEBUG(0, ("dfsrsrv: Failed to get sysvol path\n"));
-		status = NT_STATUS_NOT_FOUND;
-		goto fail;
-	}
-
-	sysvol_path = talloc_asprintf(mem_ctx, "%s/%s", sysvol_path,
-			lpcfg_dnsdomain(service->task->lp_ctx));
-	if (sysvol_path == NULL) {
-		status = NT_STATUS_NO_MEMORY;
 		goto fail;
 	}
 
