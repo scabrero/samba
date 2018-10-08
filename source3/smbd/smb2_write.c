@@ -24,6 +24,7 @@
 #include "../libcli/smb/smb_common.h"
 #include "../lib/util/tevent_ntstatus.h"
 #include "rpc_server/srv_pipe_hnd.h"
+#include "smbd/dfsr_join.h"
 
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_SMB2
@@ -323,6 +324,14 @@ static struct tevent_req *smbd_smb2_write_send(TALLOC_CTX *mem_ctx,
 
 	if (!CHECK_WRITE(fsp)) {
 		tevent_req_nterror(req, NT_STATUS_ACCESS_DENIED);
+		return tevent_req_post(req, ev);
+	}
+
+	/* need to call dfs-r from here, also should call from
+	 * schedule_aio_write_and_X() in case we're doing smb1 */
+	status = dfsr_send_file_update(fsp, in_data, in_offset);
+	if (!NT_STATUS_IS_OK(status)) {
+		tevent_req_nterror(req, status);
 		return tevent_req_post(req, ev);
 	}
 
