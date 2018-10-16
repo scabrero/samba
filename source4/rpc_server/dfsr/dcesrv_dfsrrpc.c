@@ -23,6 +23,7 @@
 #include "rpc_server/dcerpc_server.h"
 #include "librpc/gen_ndr/ndr_frstrans.h"
 #include "rpc_server/common/common.h"
+#include "librpc/gen_ndr/frstrans.h"
 
 #define DCESRV_INTERFACE_FRSTRANS_BIND(call, iface) \
 	dcesrv_interface_frstrans_bind(call, iface)
@@ -38,9 +39,9 @@ static NTSTATUS dcesrv_interface_frstrans_bind(struct dcesrv_call_state *dce_cal
 static WERROR dcesrv_frstrans_CheckConnectivity(struct dcesrv_call_state *dce_call, TALLOC_CTX *mem_ctx,
 		       struct frstrans_CheckConnectivity *r)
 {
-	DCESRV_FAULT(DCERPC_FAULT_OP_RNG_ERROR);
+	r->out.result = WERR_OK;
+	return r->out.result;
 }
-
 
 /*
   frstrans_EstablishConnection
@@ -48,7 +49,12 @@ static WERROR dcesrv_frstrans_CheckConnectivity(struct dcesrv_call_state *dce_ca
 static WERROR dcesrv_frstrans_EstablishConnection(struct dcesrv_call_state *dce_call, TALLOC_CTX *mem_ctx,
 		       struct frstrans_EstablishConnection *r)
 {
-	DCESRV_FAULT(DCERPC_FAULT_OP_RNG_ERROR);
+	r->out.upstream_protocol_version = talloc_zero(mem_ctx, enum frstrans_ProtocolVersion);
+	*(r->out.upstream_protocol_version) = FRSTRANS_PROTOCOL_VERSION_W2K3R2;
+	r->out.upstream_flags = talloc_zero(mem_ctx, uint32_t);
+	*(r->out.upstream_flags) = 0;
+	r->out.result = WERR_OK;
+	return r->out.result;
 }
 
 
@@ -58,7 +64,8 @@ static WERROR dcesrv_frstrans_EstablishConnection(struct dcesrv_call_state *dce_
 static WERROR dcesrv_frstrans_EstablishSession(struct dcesrv_call_state *dce_call, TALLOC_CTX *mem_ctx,
 		       struct frstrans_EstablishSession *r)
 {
-	DCESRV_FAULT(DCERPC_FAULT_OP_RNG_ERROR);
+	r->out.result = WERR_OK;
+	return r->out.result;
 }
 
 
