@@ -24,6 +24,19 @@
 #include "librpc/gen_ndr/ndr_frstrans.h"
 #include "rpc_server/common/common.h"
 #include "librpc/gen_ndr/frstrans.h"
+#include "lib/param/param.h"
+#include "lib/param/loadparm.h"
+#include "libds/common/roles.h"
+#include "ldb.h"
+#include "source4/dsdb/samdb/samdb.h"
+#include "libds/common/flags.h"
+
+enum replicationGroupType {
+	OTHER=0,
+	SYSVOL=1,
+	PROTECTION=2,
+	DISTRIBUTION=3
+};
 
 #define DCESRV_INTERFACE_FRSTRANS_BIND(call, iface) \
 	dcesrv_interface_frstrans_bind(call, iface)
@@ -43,17 +56,193 @@ static WERROR dcesrv_frstrans_CheckConnectivity(struct dcesrv_call_state *dce_ca
 	return r->out.result;
 }
 
+static const char* host_dn(struct ldb_context *ldb,
+			   struct loadparm_context *lp_ctx,
+			   TALLOC_CTX *mem_ctx)
+{
+	int err;
+	const char *wk_guid;
+	struct ldb_dn *wk_dn;
+	struct ldb_result *res = NULL;
+	const char* name = lpcfg_netbios_name(lp_ctx);
+	static const char *attrs[] = {
+		"distinguishedName",
+		NULL
+	};
+	enum server_role role = lpcfg_server_role(lp_ctx);
+
+	if (role == ROLE_ACTIVE_DIRECTORY_DC) {
+		wk_guid = DS_GUID_DOMAIN_CONTROLLERS_CONTAINER;
+	} else {
+		wk_guid = DS_GUID_COMPUTERS_CONTAINER;
+	}
+
+	err = dsdb_wellknown_dn(ldb, mem_ctx, ldb_get_default_basedn(ldb),
+				wk_guid, &wk_dn);
+	if (err != LDB_SUCCESS) {
+		return NULL;
+	}
+
+	err = ldb_search(ldb, mem_ctx, &res, wk_dn, LDB_SCOPE_SUBTREE,
+			 attrs, "(name=%s)", name);
+	if (err != LDB_SUCCESS || res->count != 1) {
+		return NULL;
+	}
+	return ldb_msg_find_attr_as_string(res->msgs[0], "distinguishedName", NULL);
+}
+
 /*
   frstrans_EstablishConnection
 */
 static WERROR dcesrv_frstrans_EstablishConnection(struct dcesrv_call_state *dce_call, TALLOC_CTX *mem_ctx,
 		       struct frstrans_EstablishConnection *r)
 {
-	r->out.upstream_protocol_version = talloc_zero(mem_ctx, enum frstrans_ProtocolVersion);
+	WERROR ret = WERR_OK;
+	const char* replica_set_guid_txt = NULL;
+	const char* connection_guid_txt = NULL;
+	struct GUID_txt_buf txtguid1, txtguid2;
+	int server_role;
+	struct ldb_context *ldb;
+	int ldbret;
+	struct ldb_dn *domain_dn = NULL;
+	struct ldb_dn *search_dn = NULL;
+	struct ldb_dn *repl_dn = NULL;
+	static const char *repl_attrs[] = {
+		"msDFSR-ReplicationGroupType",
+		"cn",
+		NULL
+	};
+	enum replicationGroupType repl_type;
+	const char *repl_group = NULL;
+	const char *dn = NULL;
+	struct ldb_result *res = NULL;
+	static const char *conn_attrs[] = {
+		"msDFSR-Enabled",
+		NULL
+	};
+	int conn_enabled = 1;
+
+	ldb = samdb_connect(mem_ctx,
+			    dce_call->event_ctx,
+			    dce_call->conn->dce_ctx->lp_ctx,
+			    dce_call->conn->auth_state.session_info,
+			    dce_call->conn->remote_address,
+			    0);
+	if (ldb == NULL) {
+		ret = WERR_DS_UNAVAILABLE;
+		goto out;
+	}
+
+	/* [MS-FRS2] 3.2.4.1.2: If the server is not a member of the specified
+	   replication group it MUST fail the call with an implementation-defined
+	   failure value.
+	*/
+	replica_set_guid_txt = GUID_buf_string(&(r->in.replica_set_guid), &txtguid1);
+	connection_guid_txt = GUID_buf_string(&(r->in.connection_guid), &txtguid2);
+	domain_dn = ldb_get_default_basedn(ldb);
+	search_dn = ldb_dn_new_fmt(mem_ctx, ldb,
+				   "CN=DFSR-GlobalSettings,CN=System,%s",
+				   ldb_dn_get_linearized(domain_dn));
+
+	ldbret = ldb_search(ldb, mem_ctx, &res, search_dn, LDB_SCOPE_ONELEVEL,
+			    repl_attrs, "(objectGUID=%s)", replica_set_guid_txt);
+	if (ldbret != LDB_SUCCESS || res->count != 1) {
+		ret = WERR_FRS_ERROR_CONNECTION_INVALID;
+		goto out;
+	}
+	repl_type = ldb_msg_find_attr_as_uint(res->msgs[0],
+					      "msDFSR-ReplicationGroupType",
+					      0);
+	repl_group = ldb_msg_find_attr_as_string(res->msgs[0], "cn", NULL);
+	if (repl_group == NULL) {
+		ret = WERR_NOT_ENOUGH_MEMORY;
+		goto out;
+	}
+	repl_dn = ldb_dn_new_fmt(mem_ctx, ldb,
+				 "CN=Topology,CN=%s,CN=DFSR-GlobalSettings,CN=System,%s",
+				 repl_group, ldb_dn_get_linearized(domain_dn));
+	dn = host_dn(ldb, dce_call->conn->dce_ctx->lp_ctx, mem_ctx);
+
+	ldbret = ldb_search(ldb, mem_ctx, &res, repl_dn, LDB_SCOPE_ONELEVEL, NULL,
+			    "(&(objectClass=msDFSR-Member)(msDFSR-ComputerReference=%s))",
+			    dn);
+	if (ldbret != LDB_SUCCESS || res->count != 1) {
+		ret = WERR_FRS_ERROR_CONNECTION_INVALID;
+		goto out;
+	}
+
+	/* [MS-FRS2] 3.2.4.1.2: If the specified connection does not exist in the
+	   specified replication group's configuration and the replication group's
+	   type is not SYSVOL, then the server MUST fail the call with
+	   FRS_ERROR_CONNECTION_INVALID.
+	*/
+	if (repl_type != SYSVOL) {
+		ldbret = ldb_search(ldb, mem_ctx, &res, repl_dn, LDB_SCOPE_SUBTREE,
+				    conn_attrs,
+				    "(&(objectClass=msDFSR-Connection)(objectGUID=%s))",
+				    connection_guid_txt);
+		if (ldbret != LDB_SUCCESS || res->count != 1) {
+			ret = WERR_FRS_ERROR_CONNECTION_INVALID;
+			goto out;
+		}
+		conn_enabled = ldb_msg_find_attr_as_bool(res->msgs[0],
+							 "msDFSR-Enabled",
+							 1);
+	}
+
+	/* [MS-FRS2] 3.2.4.1.2: If the replication group's type is SYSVOL and the
+	   specified connection does not exist in the specified replication group's
+	   configuration and there is no Member object in the specified replication
+	   group's configuration, the server MUST fail the request with
+	   FRS_ERROR_CONNECTION_INVALID.
+	*/
+	/* SYSVOL share never has connections, and we already validated that the
+	 * member object exists */
+
+	/* [MS-FRS2] 3.2.4.1.2: If the replication group's type is SYSVOL and the
+	   client is not a domain controller in the same domain as the server, or if
+	   the server is not a domain controller, then the server MUST fail the call
+	   with FRS_ERROR_CONNECTION_INVALID.
+	*/
+	server_role = lpcfg_server_role(dce_call->conn->dce_ctx->lp_ctx);
+	if (repl_type == SYSVOL &&
+	    server_role != ROLE_ACTIVE_DIRECTORY_DC) {
+		ret = WERR_FRS_ERROR_CONNECTION_INVALID;
+		goto out;
+	}
+
+	/* [MS-FRS2] 3.2.4.1.2: If the specified connection is disabled then the
+	   server MUST fail the call with FRS_ERROR_CONNECTION_INVALID.
+	*/
+	if (!conn_enabled) {
+		ret = WERR_FRS_ERROR_CONNECTION_INVALID;
+		goto out;
+	}
+
+	/* [MS-FRS2] 3.2.4.1.2: If the server is not the specified connection's
+	   outbound partner, or the client is not the connection's inbound partner
+	   then the server MUST fail the call with FRS_ERROR_CONNECTION_INVALID.
+	*/
+
+	/* [MS-FRS2] 3.2.4.1.2: If the client's protocol version number is 0x00050001,
+	   or if the client's protocol's major version number is not equal to the
+	   server protocol's major version number, then the server MUST fail the call
+	   with the FRS_ERROR_INCOMPATIBLE_VERSION failure value.
+	*/
+	if (r->in.downstream_protocol_version == 0x00050001 ||
+	    (r->in.downstream_protocol_version & 0x00050000) != 0x00050000) {
+		//return WERR_FRS_ERROR_INCOMPATIBLE_VERSION;
+		ret = WERR_FRS_ERROR_CONNECTION_INVALID;
+		goto out;
+	}
+
+out:
+	r->out.upstream_protocol_version =
+		talloc_zero(mem_ctx, enum frstrans_ProtocolVersion);
 	*(r->out.upstream_protocol_version) = FRSTRANS_PROTOCOL_VERSION_W2K3R2;
 	r->out.upstream_flags = talloc_zero(mem_ctx, uint32_t);
 	*(r->out.upstream_flags) = 0;
-	r->out.result = WERR_OK;
+	r->out.result = ret;
 	return r->out.result;
 }
 
