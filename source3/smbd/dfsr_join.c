@@ -21,6 +21,7 @@
 */
 
 #include "includes.h"
+#include "dfsr_join.h"
 #include "lib/util/tevent_ntstatus.h"
 #include "lib/param/param.h"
 #include "source4/lib/messaging/irpc.h"
