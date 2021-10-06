@@ -75,6 +75,12 @@ bld.SAMBA_SUBSYSTEM('NDR_FRSTRANS',
     public_deps='ndr'
     )
 
+bld.SAMBA_SUBSYSTEM('RPC_NDR_FRSTRANS',
+    source='gen_ndr/ndr_frstrans_c.c',
+    public_deps='NDR_FRSTRANS'
+    )
+
+
 bld.SAMBA_SUBSYSTEM('NDR_DFSBLOBS',
     source='gen_ndr/ndr_dfsblobs.c',
     public_deps='ndr'

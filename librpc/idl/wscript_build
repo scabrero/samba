@@ -1,16 +1,29 @@
 #!/usr/bin/env python
 
 bld.SAMBA_PIDL_LIST('PIDL',
-                    '''drsuapi.idl epmapper.idl
-                       eventlog.idl
-                       browser.idl dssetup.idl frsapi.idl
-                       spoolss.idl
-                       dnsserver.idl
-                       samr.idl srvsvc.idl winreg.idl
-                       mgmt.idl netlogon.idl
-                       svcctl.idl wkssvc.idl eventlog6.idl backupkey.idl
-                       witness.idl clusapi.idl
-                       mdssvc.idl''',
+                    '''
+                    drsuapi.idl
+                    epmapper.idl
+                    eventlog.idl
+                    browser.idl
+                    dssetup.idl
+                    frsapi.idl
+                    spoolss.idl
+                    dnsserver.idl
+                    samr.idl
+                    srvsvc.idl
+                    winreg.idl
+                    mgmt.idl
+                    netlogon.idl
+                    svcctl.idl
+                    wkssvc.idl
+                    eventlog6.idl
+                    backupkey.idl
+                    witness.idl
+                    clusapi.idl
+                    mdssvc.idl
+                    frstrans.idl
+                    ''',
                     options='--header --ndr-parser --server-compat --server --client --python',
                     output_dir='../gen_ndr')
 
@@ -82,7 +95,6 @@ bld.SAMBA_PIDL_LIST('PIDL',
                     dbgidl.idl
                     dsbackup.idl
                     efs.idl
-                    frstrans.idl
                     frsrpc.idl
                     keysvc.idl
                     msgsvc.idl
