@@ -926,8 +926,32 @@ static const char *http_method_str(enum http_cmd_type type)
 	const char *method;
 
 	switch (type) {
+	case HTTP_REQ_GET:
+		method = "GET";
+		break;
 	case HTTP_REQ_POST:
 		method = "POST";
+		break;
+	case HTTP_REQ_HEAD:
+		method = "HEAD";
+		break;
+	case HTTP_REQ_PUT:
+		method = "PUT";
+		break;
+	case HTTP_REQ_DELETE:
+		method = "DELETE";
+		break;
+	case HTTP_REQ_OPTIONS:
+		method = "OPTIONS";
+		break;
+	case HTTP_REQ_TRACE:
+		method = "TRACE";
+		break;
+	case HTTP_REQ_CONNECT:
+		method = "CONNECT";
+		break;
+	case HTTP_REQ_PATCH:
+		method = "PATCH";
 		break;
 	case HTTP_REQ_RPC_IN_DATA:
 		method = "RPC_IN_DATA";

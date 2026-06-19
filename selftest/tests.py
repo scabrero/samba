@@ -327,6 +327,7 @@ plantestsuite(
 
 planpythontestsuite("fileserver", "samba.tests.blackbox.http_content")
 planpythontestsuite("fileserver", "samba.tests.blackbox.http_chunk")
+planpythontestsuite("none", "samba.http_tests")
 planpythontestsuite("none", "samba.tests.upgradeprovision")
 planpythontestsuite("none", "samba.tests.xattr")
 planpythontestsuite("none", "samba.tests.ntacls")
