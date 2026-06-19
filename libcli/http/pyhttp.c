@@ -286,7 +286,6 @@ static PyObject *py_http_connection_disconnect(PyObject *self,
 
 	TALLOC_FREE(conn->http_conn);
 	TALLOC_FREE(conn->server);
-	conn->server = NULL;
 	conn->port = 0;
 	Py_RETURN_NONE;
 }
