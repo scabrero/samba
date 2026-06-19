@@ -6,6 +6,12 @@ bld.SAMBA_LIBRARY('http',
 	private_library=True,
 )
 
+bld.SAMBA_PYTHON('python_http',
+	source='pyhttp.c',
+	deps='http events',
+	realname='samba/http.so'
+)
+
 bld.SAMBA_MODULE('gensec_http_basic',
 	source='gensec/basic.c',
 	subsystem='gensec',
